@@ -1,0 +1,57 @@
+{
+  "crs": {
+    "allow_unknown_crs": false,
+    "crs_wkt": "",
+    "crs_wkt_file": "",
+    "epsg_code": 4326
+  },
+  "dem": {
+    "cell_size": 8.0,
+    "edge_shrink_cells": 1.0,
+    "enable_edge_mask": true,
+    "fill_holes": true,
+    "fill_max_radius": 2,
+    "fill_min_neighbors": 4,
+    "idw_max_points": 12,
+    "idw_min_points": 3,
+    "idw_power": 2.0,
+    "idw_radius": 24.0,
+    "nearest_max_distance": 24.0,
+    "nodata": -9999.0
+  },
+  "ground": {
+    "distance_weight_power": 2.0,
+    "knn": 8,
+    "max_height_diff": 1.0,
+    "max_iterations": 6,
+    "max_slope_deg": 20.0,
+    "min_ground_neighbors": 3,
+    "min_neighbor_completeness": 0.5,
+    "reference_fallback_mode": "inverse_distance_squared",
+    "reference_mode": "local_plane",
+    "search_radius": 24.0,
+    "seed_grid_size": 24.0
+  },
+  "input": {
+    "file_path": "D:\\Desktop\\hl_code\\data\\基准.ply"
+  },
+  "outlier": {
+    "knn": 16,
+    "stddev_multiplier": 1.5,
+    "use_robust_stat": false
+  },
+  "output": {
+    "directory": "D:\\Desktop\\hl_code\\config\\output_tile_smoke\\20260406_044353",
+    "overwrite": true
+  },
+  "preprocess": {
+    "max_extreme_sample": 5000,
+    "sample_spacing_count": 512
+  },
+  "tile": {
+    "memory_limit_mb": 512,
+    "mode": "forced",
+    "tile_buffer": 24.0,
+    "tile_size_cells": 100
+  }
+}

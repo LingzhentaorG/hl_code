@@ -1,0 +1,50 @@
+# Build output
+build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Output directories
+output/
+data/*.ply
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# Dependencies (auto-downloaded by FetchContent)
+build/_deps/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+
+# Log files
+*.log
+
+# OS files
+Desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
