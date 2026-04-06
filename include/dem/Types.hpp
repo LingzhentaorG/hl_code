@@ -367,12 +367,18 @@ struct ProcessingArtifacts {
   PointCloud seed_points;                      /**< 种子点云 */
   PointCloud ground_points;                    /**< 最终地面点云 */
   PointCloud nonground_points;                 /**< 非地面点云 */
+  RasterGrid dem_raw_direct;                   /**< 预处理后直接落格 DEM（无地面滤波/无插值） */
+  RasterGrid dem_ground_direct;                /**< 地面点直接落格 DEM（无插值） */
   RasterGrid dem_nearest;                      /**< 最近邻插值 DEM */
   RasterGrid dem_idw;                           /**< IDW 插值 DEM */
   RasterGrid dem_nearest_filled;               /**< 最近邻插值 DEM（空洞已填充） */
   RasterGrid dem_idw_filled;                   /**< IDW 插值 DEM（空洞已填充） */
-  RasterGrid dem_mask;                          /**< 有效值掩码栅格 */
+  RasterGrid dem_support_mask;                  /**< 原始地面直接支持掩码栅格 */
+  RasterGrid dem_mask;                          /**< 最终 DEM 有效域掩码栅格 */
   RasterGrid dem_edge_mask;                     /**< 边缘掩码栅格 */
+  RasterGrid dtm_analysis;                      /**< 分析型裸地 DTM */ 
+  RasterGrid dtm_display;                       /**< 展示型全域补全 + 平滑 DTM */
+  RasterGrid dtm_object_mask;                   /**< 建筑/树木等高起伏对象掩码 */
 };
 
 }  // namespace dem

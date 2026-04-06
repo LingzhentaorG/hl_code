@@ -33,6 +33,35 @@ class MainController {
 
  private:
   /**
+   * @brief 处理单个点云的支持阶段，只生成点级分类和直落格产物
+   * @param cloud 输入点云
+   * @param config DEM 配置参数
+   * @param logger 日志记录器
+   * @param stats 统计信息收集器
+   * @param forced_grid_bounds 强制指定的栅格边界（Tile 模式下使用）
+   * @return 支持阶段产物
+   */
+  ProcessingArtifacts processSupportStage(PointCloud cloud,
+                                          const DEMConfig& config,
+                                          Logger& logger,
+                                          ProcessStats& stats,
+                                          const Bounds* forced_grid_bounds) const;
+
+  /**
+   * @brief 基于全局 support/domain 构建最终 DEM/DTM/QC 产物
+   * @param artifacts 输入输出产物集合
+   * @param config DEM 配置参数
+   * @param logger 日志记录器
+   * @param stats 统计信息收集器
+   * @param tiles tile 定义（可选，用于 seam 风险评估）
+   */
+  void finalizeArtifacts(ProcessingArtifacts& artifacts,
+                         const DEMConfig& config,
+                         Logger& logger,
+                         ProcessStats& stats,
+                         const std::vector<TileDefinition>* tiles = nullptr) const;
+
+  /**
    * @brief 处理单个点云的完整 DEM 生成流程
    * @param cloud 输入点云
    * @param config DEM 配置参数
@@ -46,8 +75,7 @@ class MainController {
                                          const DEMConfig& config,
                                          Logger& logger,
                                          ProcessStats& stats,
-                                         const Bounds* forced_grid_bounds,
-                                         bool apply_edge_shrink) const;
+                                         const Bounds* forced_grid_bounds) const;
 
   /**
    * @brief 在 Tile 分块模式下处理整个区域

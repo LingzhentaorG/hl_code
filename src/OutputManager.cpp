@@ -1,234 +1,339 @@
 /**
  * @file OutputManager.cpp
- * @brief 输出管理器实现：PLY 点云写入与 PNG 栅格导出
+ * @brief 输出管理器实现：点云、GeoTIFF、PNG、统计和报告写出
  */
 
 #include "dem/OutputManager.hpp"
+
 #include "dem/Utils.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
-#include <array>
+#include <chrono>
 #include <cmath>
-#include <cstdint>
-#include <filesystem>
+#include <cstdlib>
 #include <fstream>
-#include <limits>
-#include <numeric>
+#include <iomanip>
 #include <sstream>
-#include <stdexcept>
-#include <string>
 
 namespace dem {
+namespace {
 
-/**
- * @brief 将点云数据以 ASCII PLY 格式写入指定路径
- *
- * PLY 文件结构：
- * 1. 文件头（header）：声明格式、顶点数和属性列表
- * 2. 顶点数据：每行一个点，包含 x y z 及可选的分类属性
- *
- * 支持输出原始点云、种子点、地面点和非地面点四类。
- */
-void OutputManager::writePly(const std::filesystem::path& output_path,
-                             const PointCloud& cloud,
-                             Logger& logger,
-                             ProcessStats& stats) const {
-  ScopedTimer timer(stats, "ply_write_seconds");
-  std::ofstream stream(output_path);
+struct ContinuousRasterSummary {
+  std::size_t valid_count = 0U;
+  std::size_t nodata_count = 0U;
+  double valid_ratio = 0.0;
+  double nodata_ratio = 0.0;
+};
+
+struct MaskRasterSummary {
+  std::size_t active_count = 0U;
+  std::size_t inactive_count = 0U;
+  double active_ratio = 0.0;
+  double inactive_ratio = 0.0;
+};
+
+#ifndef _WIN32
+std::string quoteForShell(const std::filesystem::path& path) {
+  return "\"" + path.generic_string() + "\"";
+}
+#endif
+
+ContinuousRasterSummary summarizeContinuousRaster(const RasterGrid& grid) {
+  ContinuousRasterSummary summary;
+  const auto total = std::max<std::size_t>(1U, grid.size());
+  for (const double value : grid.values) {
+    if (!std::isfinite(value) || value == grid.nodata) {
+      ++summary.nodata_count;
+      continue;
+    }
+    ++summary.valid_count;
+  }
+  summary.valid_ratio = static_cast<double>(summary.valid_count) / static_cast<double>(total);
+  summary.nodata_ratio = static_cast<double>(summary.nodata_count) / static_cast<double>(total);
+  return summary;
+}
+
+MaskRasterSummary summarizeMaskRaster(const RasterGrid& grid) {
+  MaskRasterSummary summary;
+  const auto total = std::max<std::size_t>(1U, grid.size());
+  for (const double value : grid.values) {
+    if (std::isfinite(value) && value > 0.5) {
+      ++summary.active_count;
+    } else {
+      ++summary.inactive_count;
+    }
+  }
+  summary.active_ratio = static_cast<double>(summary.active_count) / static_cast<double>(total);
+  summary.inactive_ratio = static_cast<double>(summary.inactive_count) / static_cast<double>(total);
+  return summary;
+}
+
+void writeContinuousRasterSection(std::ofstream& stream, const std::string& name, const RasterGrid& grid) {
+  const auto summary = summarizeContinuousRaster(grid);
+  stream << "[raster." << name << "]\n";
+  stream << "rows=" << grid.rows << "\n";
+  stream << "cols=" << grid.cols << "\n";
+  stream << "cell_size=" << grid.cell_size << "\n";
+  stream << "nodata=" << grid.nodata << "\n";
+  stream << "valid_count=" << summary.valid_count << "\n";
+  stream << "nodata_count=" << summary.nodata_count << "\n";
+  stream << "valid_ratio=" << summary.valid_ratio << "\n";
+  stream << "nodata_ratio=" << summary.nodata_ratio << "\n\n";
+}
+
+void writeMaskSection(std::ofstream& stream, const std::string& name, const RasterGrid& grid) {
+  const auto summary = summarizeMaskRaster(grid);
+  stream << "[raster." << name << "]\n";
+  stream << "rows=" << grid.rows << "\n";
+  stream << "cols=" << grid.cols << "\n";
+  stream << "cell_size=" << grid.cell_size << "\n";
+  stream << "active_count=" << summary.active_count << "\n";
+  stream << "inactive_count=" << summary.inactive_count << "\n";
+  stream << "active_ratio=" << summary.active_ratio << "\n";
+  stream << "inactive_ratio=" << summary.inactive_ratio << "\n\n";
+}
+
+}  // namespace
+
+void OutputManager::writeArtifacts(const ProcessingArtifacts& artifacts,
+                                   const DEMConfig& config,
+                                   const CRSDefinition& crs,
+                                   Logger& logger,
+                                   ProcessStats& stats) const {
+  ScopedTimer timer(stats, "output_write_seconds");
+
+  const auto dem_dir = config.output.directory / "dem";
+  const auto pointcloud_dir = config.output.directory / "pointcloud";
+  const auto log_dir = config.output.directory / "log";
+  ensureDirectory(dem_dir);
+  ensureDirectory(pointcloud_dir);
+  ensureDirectory(log_dir);
+
+  writePointCloudPly(artifacts.filtered_points, pointcloud_dir / "filtered_points.ply");
+  writePointCloudPly(artifacts.seed_points, pointcloud_dir / "seed_points.ply");
+  writePointCloudPly(artifacts.ground_points, pointcloud_dir / "ground_points.ply");
+  writePointCloudPly(artifacts.nonground_points, pointcloud_dir / "nonground_points.ply");
+
+  writeGeoTiff(artifacts.dem_raw_direct, config, crs, dem_dir / "dem_raw_direct.tif", logger);
+  writeGeoTiff(artifacts.dem_ground_direct, config, crs, dem_dir / "dem_ground_direct.tif", logger);
+  writeGeoTiff(artifacts.dem_nearest, config, crs, dem_dir / "dem_nearest.tif", logger);
+  writeGeoTiff(artifacts.dem_idw, config, crs, dem_dir / "dem_idw.tif", logger);
+  writeGeoTiff(artifacts.dem_nearest_filled, config, crs, dem_dir / "dem_nearest_filled.tif", logger);
+  writeGeoTiff(artifacts.dem_idw_filled, config, crs, dem_dir / "dem_idw_filled.tif", logger);
+  writeGeoTiff(artifacts.dem_support_mask, config, crs, dem_dir / "dem_support_mask.tif", logger);
+  writeGeoTiff(artifacts.dem_mask, config, crs, dem_dir / "dem_mask.tif", logger);
+  writeGeoTiff(artifacts.dem_edge_mask, config, crs, dem_dir / "dem_edge_mask.tif", logger);
+  writeGeoTiff(artifacts.dtm_analysis, config, crs, dem_dir / "dtm_analysis.tif", logger);
+  writeGeoTiff(artifacts.dtm_display, config, crs, dem_dir / "dtm_display.tif", logger);
+  writeGeoTiff(artifacts.dtm_object_mask, config, crs, dem_dir / "dtm_object_mask.tif", logger);
+
+  writeStats(artifacts, config, stats, log_dir / "stats.txt");
+
+  nlohmann::json report;
+  report["metadata"]["input_file"] = config.input.file_path.string();
+  report["metadata"]["output_directory"] = config.output.directory.string();
+  report["crs"]["authority_name"] = crs.authority_name;
+  report["crs"]["epsg_code"] = crs.epsg_code;
+  report["crs"]["known"] = crs.known;
+  report["raster"]["dem_raw_direct"]["valid_ratio"] = summarizeContinuousRaster(artifacts.dem_raw_direct).valid_ratio;
+  report["raster"]["dem_ground_direct"]["valid_ratio"] = summarizeContinuousRaster(artifacts.dem_ground_direct).valid_ratio;
+  report["raster"]["dem_nearest"]["valid_ratio"] = summarizeContinuousRaster(artifacts.dem_nearest).valid_ratio;
+  report["raster"]["dem_idw"]["valid_ratio"] = summarizeContinuousRaster(artifacts.dem_idw).valid_ratio;
+  report["raster"]["dem_mask"]["active_ratio"] = summarizeMaskRaster(artifacts.dem_mask).active_ratio;
+  report["raster"]["dem_support_mask"]["active_ratio"] = summarizeMaskRaster(artifacts.dem_support_mask).active_ratio;
+  report["raster"]["dem_edge_mask"]["active_ratio"] = summarizeMaskRaster(artifacts.dem_edge_mask).active_ratio;
+  report["raster"]["dtm_analysis"]["valid_ratio"] = summarizeContinuousRaster(artifacts.dtm_analysis).valid_ratio;
+  report["raster"]["dtm_display"]["valid_ratio"] = summarizeContinuousRaster(artifacts.dtm_display).valid_ratio;
+  report["raster"]["dtm_object_mask"]["active_ratio"] = summarizeMaskRaster(artifacts.dtm_object_mask).active_ratio;
+  report["pointcloud"]["ground_points"] = artifacts.ground_points.points.size();
+  report["pointcloud"]["nonground_points"] = artifacts.nonground_points.points.size();
+  report["stats"]["counts"] = stats.counts;
+  report["stats"]["values"] = stats.values;
+  report["stats"]["durations_seconds"] = stats.durations_seconds;
+  std::ofstream report_stream(log_dir / "report.json");
+  report_stream << std::setw(2) << report << '\n';
+
+  logger.info("Output files written to " + config.output.directory.string());
+}
+
+void OutputManager::writeStats(const ProcessingArtifacts& artifacts,
+                               const DEMConfig&,
+                               const ProcessStats& stats,
+                               const std::filesystem::path& path) const {
+  std::ofstream stream(path);
   if (!stream) {
-    throw std::runtime_error("Unable to open output file: " + output_path.string());
+    throw std::runtime_error("Unable to open stats file: " + path.string());
   }
 
-  /* 写入 PLY 文件头 */
+  stream << "tile_mode_used=" << (stats.tile_mode_used ? 1 : 0) << "\n\n";
+
+  stream << "[counts]\n";
+  {
+    std::vector<std::pair<std::string, std::size_t>> items(stats.counts.begin(), stats.counts.end());
+    std::sort(items.begin(), items.end(), [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+    for (const auto& [key, value] : items) {
+      stream << key << "=" << value << "\n";
+    }
+    stream << "\n";
+  }
+
+  stream << "[values]\n";
+  {
+    std::vector<std::pair<std::string, double>> items(stats.values.begin(), stats.values.end());
+    std::sort(items.begin(), items.end(), [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+    for (const auto& [key, value] : items) {
+      stream << key << "=" << value << "\n";
+    }
+    stream << "\n";
+  }
+
+  stream << "[durations_seconds]\n";
+  {
+    std::vector<std::pair<std::string, double>> items(stats.durations_seconds.begin(), stats.durations_seconds.end());
+    std::sort(items.begin(), items.end(), [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+    for (const auto& [key, value] : items) {
+      stream << key << "=" << value << "\n";
+    }
+    stream << "\n";
+  }
+
+  stream << "[ground_added_per_iteration]\n";
+  for (std::size_t i = 0; i < stats.ground_added_per_iteration.size(); ++i) {
+    stream << "iter_" << (i + 1) << "=" << stats.ground_added_per_iteration[i] << "\n";
+  }
+  stream << "\n";
+
+  stream << "[reference_mode_counts]\n";
+  {
+    std::vector<std::pair<std::string, std::size_t>> items(
+        stats.reference_mode_counts.begin(), stats.reference_mode_counts.end());
+    std::sort(items.begin(), items.end(), [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+    for (const auto& [key, value] : items) {
+      stream << key << "=" << value << "\n";
+    }
+    stream << "\n";
+  }
+
+  writeContinuousRasterSection(stream, "dem_raw_direct", artifacts.dem_raw_direct);
+  writeContinuousRasterSection(stream, "dem_ground_direct", artifacts.dem_ground_direct);
+  writeContinuousRasterSection(stream, "dem_nearest", artifacts.dem_nearest);
+  writeContinuousRasterSection(stream, "dem_idw", artifacts.dem_idw);
+  writeContinuousRasterSection(stream, "dem_nearest_filled", artifacts.dem_nearest_filled);
+  writeContinuousRasterSection(stream, "dem_idw_filled", artifacts.dem_idw_filled);
+  writeContinuousRasterSection(stream, "dtm_analysis", artifacts.dtm_analysis);
+  writeContinuousRasterSection(stream, "dtm_display", artifacts.dtm_display);
+  writeMaskSection(stream, "dem_support_mask", artifacts.dem_support_mask);
+  writeMaskSection(stream, "dem_mask", artifacts.dem_mask);
+  writeMaskSection(stream, "dem_edge_mask", artifacts.dem_edge_mask);
+  writeMaskSection(stream, "dtm_object_mask", artifacts.dtm_object_mask);
+
+  stream << "[pointclouds]\n";
+  stream << "filtered_points=" << artifacts.filtered_points.points.size() << "\n";
+  stream << "seed_points=" << artifacts.seed_points.points.size() << "\n";
+  stream << "ground_points=" << artifacts.ground_points.points.size() << "\n";
+  stream << "nonground_points=" << artifacts.nonground_points.points.size() << "\n";
+}
+
+void OutputManager::writePointCloudPly(const PointCloud& cloud, const std::filesystem::path& path) const {
+  std::ofstream stream(path);
+  if (!stream) {
+    throw std::runtime_error("Unable to open PLY output: " + path.string());
+  }
+
   stream << "ply\n";
   stream << "format ascii 1.0\n";
   stream << "element vertex " << cloud.points.size() << "\n";
   stream << "property float x\n";
   stream << "property float y\n";
   stream << "property float z\n";
-
-  /* 根据点云类型决定是否写入分类属性列 */
-  bool has_classification = false;
-  if (!cloud.points.empty()) {
-    has_classification = true;
-  }
-  if (has_classification) {
-    stream << "property uchar classification\n";   /* 分类属性：0=非地面, 1=地面 */
-  }
+  stream << "property uchar classification\n";
   stream << "end_header\n";
 
-  /* 逐行写入顶点数据 */
   for (const auto& point : cloud.points) {
-    stream << point.x << " " << point.y << " " << point.z;
-    if (has_classification) {
-      stream << " " << static_cast<int>(point.ground ? 1 : 0);
-    }
-    stream << "\n";
+    const int classification = point.ground ? 1 : 0;
+    stream << point.x << " " << point.y << " " << point.z << " " << classification << "\n";
   }
-
-  logger.info("Written PLY: " + output_path.string() +
-              " (" + std::to_string(cloud.points.size()) + " points)");
 }
 
-/**
- * @brief 将 DEM 栅格以灰度 PNG 图像格式写入指定路径
- *
- * 像素映射策略：
- * 1. NoData 像素 → 黑色 (R=G=B=0)
- * 2. 有效高程 → 线性映射到 [0, 255] 灰度范围
- *    映射公式: gray = (z - min_z) / (max_z - min_z) × 255
- *
- * PNG 文件头遵循标准规范：
- * - 签名: \x89PNG\r\n\x1a\n
- * - IHDR: 宽度、高度、位深(8)、颜色类型(2=RGB)、压缩方式等
- * - IDAT: zlib 压缩的逐行像素数据
- * - IEND: 文件结束标记
- */
-void OutputManager::writePng(const std::filesystem::path& output_path,
-                             const DEMRaster& raster,
-                             Logger& logger,
-                             ProcessStats& stats) const {
-  ScopedTimer timer(stats, "png_write_seconds");
+void OutputManager::writeGeoTiff(const RasterGrid& grid,
+                                 const DEMConfig&,
+                                 const CRSDefinition& crs,
+                                 const std::filesystem::path& path,
+                                 Logger& logger) const {
+  ensureDirectory(path.parent_path());
 
-  /* 扫描栅格数据获取有效高程的最小/最大值用于线性拉伸 */
-  double min_z = std::numeric_limits<double>::infinity();
-  double max_z = -std::numeric_limits<double>::infinity();
-  for (const auto value : raster.data) {
-    if (value != raster.nodata_value) {
-      min_z = std::min(min_z, value);
-      max_z = std::max(max_z, value);
+  const auto stem = path.stem().string();
+  const auto png_path = path.parent_path() / (stem + ".png");
+  const auto unique_id = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  const auto bridge_dir = std::filesystem::temp_directory_path() / "dem_gtiff_bridge";
+  ensureDirectory(bridge_dir);
+  const auto bin_path = bridge_dir / (stem + "_" + unique_id + ".bin");
+  const auto meta_path = bridge_dir / (stem + "_" + unique_id + ".meta.json");
+
+  {
+    std::ofstream bin_stream(bin_path, std::ios::binary);
+    if (!bin_stream) {
+      throw std::runtime_error("Unable to open raster bin output: " + bin_path.string());
     }
+    bin_stream.write(reinterpret_cast<const char*>(grid.values.data()),
+                     static_cast<std::streamsize>(grid.values.size() * sizeof(double)));
   }
 
-  /* 全部为 NoData 时使用默认范围避免除零 */
-  if (!std::isfinite(min_z)) {
-    min_z = 0.0;
-    max_z = 255.0;
+  std::string png_mode = "dem";
+  if (stem.find("edge_mask") != std::string::npos) {
+    png_mode = "edge";
+  } else if (stem.find("object_mask") != std::string::npos) {
+    png_mode = "object_mask";
+  } else if (stem.find("support_mask") != std::string::npos) {
+    png_mode = "support_mask";
+  } else if (stem == "dem_mask") {
+    png_mode = "mask";
   }
 
-  /* 将每行像素数据编码为 RGB 三元组并压缩存储 */
-  const std::size_t row_bytes = raster.cols * 3;   /* 每像素 3 字节 (R+G+B) */
-  std::vector<std::uint8_t> raw_data;
-  raw_data.reserve((row_bytes + 1) * raster.rows);   /* +1 用于每行的 filter byte */
-
-  for (std::size_t row = 0; row < raster.rows; ++row) {
-    raw_data.push_back(0);   /* filter type: None (无过滤) */
-    for (std::size_t col = 0; col < raster.cols; ++col) {
-      const auto pixel_index = row * raster.cols + col;
-      const auto value = raster.data[pixel_index];
-
-      if (value == raster.nodata_value) {
-        /* NoData → 黑色 */
-        raw_data.push_back(0);
-        raw_data.push_back(0);
-        raw_data.push_back(0);
-      } else {
-        /* 有效高程 → 线性映射到 [0, 255] 灰度 */
-        const double normalized = std::clamp(
-            (value - min_z) / std::max(1e-6, max_z - min_z), 0.0, 1.0);
-        const auto gray = static_cast<std::uint8_t>(std::round(normalized * 255.0));
-        raw_data.push_back(gray);   /* R */
-        raw_data.push_back(gray);   /* G */
-        raw_data.push_back(gray);   /* B */
-      }
+  nlohmann::json meta;
+  meta["bin_path"] = bin_path.generic_string();
+  meta["rows"] = grid.rows;
+  meta["cols"] = grid.cols;
+  meta["nodata"] = grid.nodata;
+  meta["origin_x"] = grid.origin_x;
+  meta["origin_y"] = grid.origin_y;
+  meta["cell_size"] = grid.cell_size;
+  meta["output_path"] = path.generic_string();
+  meta["png_path"] = png_path.generic_string();
+  meta["png_mode"] = png_mode;
+  if (!crs.resolved_wkt.empty()) {
+    meta["crs_wkt"] = crs.resolved_wkt;
+  } else if (crs.epsg_code > 0) {
+    meta["epsg_code"] = crs.epsg_code;
+  }
+  {
+    std::ofstream meta_stream(meta_path);
+    if (!meta_stream) {
+      throw std::runtime_error("Unable to open GeoTIFF meta output: " + meta_path.string());
     }
+    meta_stream << meta.dump(2);
   }
 
-  /* 使用 zlib 对原始数据进行压缩 */
-  const std::size_t max_compressed_size = compressBound(raw_data.size());
-  std::vector<std::uint8_t> compressed_data(max_compressed_size);
-  uLongf compressed_length = static_cast<uLongf>(compressed_data.size());
-  if (compress2(compressed_data.data(), &compressed_length,
-                raw_data.data(), static_cast<uLong>(raw_data.size()), Z_DEFAULT_COMPRESSION) != Z_OK) {
-    throw std::runtime_error("PNG compression failed.");
-  }
-  compressed_data.resize(compressed_length);
-
-  /* 计算 CRC32 校验码辅助函数 */
-  const auto crc32_for = [](const std::vector<std::uint8_t>& data) -> std::uint32_t {
-    return crc32(0L, data.data(), static_cast<uInt>(data.size()));
-  };
-
-  /* 构建 IHDR 块（图像头信息） */
-  const auto width = static_cast<std::uint32_t>(raster.cols);
-  const auto height = static_cast<std::uint32_t>(raster.rows);
-  std::vector<std::uint8_t> ihdr_data{static_cast<std::uint8_t>(width >> 24U),
-                                       static_cast<std::uint8_t>(width >> 16U),
-                                       static_cast<std::uint8_t>(width >> 8U),
-                                       static_cast<std::uint8_t>(width),
-                                       static_cast<std::uint8_t>(height >> 24U),
-                                       static_cast<std::uint8_t>(height >> 16U),
-                                       static_cast<std::uint8_t>(height >> 8U),
-                                       static_cast<std::uint8_t>(height),
-                                       8,   /* 位深：每通道 8 位 */
-                                       2,   /* 颜色类型：RGB 彩色 */
-                                       0,   /* 压缩方法：deflate */
-                                       0,   /* 过滤方法：自适应 */
-                                       0};  /* 隔行扫描：禁用 */
-
-  /* 构建完整 PNG 文件并写入磁盘 */
-  std::ofstream stream(output_path, std::ios::binary);
-  if (!stream) {
-    throw std::runtime_error("Unable to open output file: " + output_path.string());
+  const std::filesystem::path script_path = std::filesystem::path(DEM_SOURCE_DIR) / "scripts" / "write_geotiff.py";
+  const std::filesystem::path python_path = DEM_PYTHON_EXECUTABLE;
+#ifdef _WIN32
+  const std::string command = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& '" +
+                              python_path.generic_string() + "' '" + script_path.generic_string() + "' --meta '" +
+                              meta_path.generic_string() + "'\"";
+#else
+  const std::string command =
+      quoteForShell(python_path) + " " + quoteForShell(script_path) + " --meta " + quoteForShell(meta_path);
+#endif
+  if (std::system(command.c_str()) != 0) {
+    throw std::runtime_error("GeoTIFF writer script failed for: " + path.string());
   }
 
-  /* PNG 文件签名 */
-  const std::array<std::uint8_t, 8> png_signature{
-      0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
-  stream.write(reinterpret_cast<const char*>(png_signature.data()),
-               static_cast<std::streamsize>(png_signature.size()));
-
-  /* 写入 IHDR 块（长度 + 类型 + 数据 + CRC32） */
-  writeChunk(stream, "IHDR", ihdr_data, crc32_for);
-
-  /* 写入 IDAT 块（压缩后的图像数据） */
-  writeChunk(stream, "IDAT", compressed_data, crc32_for);
-
-  /* 写入 IEND 块（文件结束标记，无数据负载） */
-  writeChunk(stream, "IEND", {}, crc32_for);
-
-  logger.info("Written PNG: " + output_path.string() +
-              " (" + std::to_string(raster.cols) + "x" + std::to_string(raster.rows) + ")");
-}
-
-/**
- * @brief 辅助函数：将数据块按 PNG 规范格式写入流
- *
- * PNG 块结构: [4字节长度][4字节类型][N字节数据][4字节CRC32]
- * 其中长度字段不包含类型、数据和 CRC 本身的字节。
- */
-void OutputManager::writeChunk(std::ofstream& stream,
-                               const std::string& chunk_type,
-                               const std::vector<std::uint8_t>& chunk_data,
-                               const std::function<std::uint32_t(const std::vector<std::uint8_t>&)>& crc32_fn) const {
-  /* 写入 4 字节大端序数据长度（不含类型和 CRC） */
-  const auto length = static_cast<std::uint32_t>(chunk_data.size());
-  const std::array<std::uint8_t, 4> length_bytes{static_cast<std::uint8_t>(length >> 24U),
-                                                  static_cast<std::uint8_t>(length >> 16U),
-                                                  static_cast<std::uint8_t>(length >> 8U),
-                                                  static_cast<std::uint8_t>(length)};
-  stream.write(reinterpret_cast<const char*>(length_bytes.data()),
-               static_cast<std::streamsize>(length_bytes.size()));
-
-  /* 写入 4 字节块类型标识符 */
-  stream.write(chunk_type.c_str(), 4);
-
-  /* 写入块数据负载 */
-  if (!chunk_data.empty()) {
-    stream.write(reinterpret_cast<const char*>(chunk_data.data()),
-                 static_cast<std::streamsize>(chunk_data.size()));
-  }
-
-  /* 计算并写入 CRC32 校验码（覆盖类型 + 数据） */
-  std::vector<std::uint8_t> crc_input(chunk_type.begin(), chunk_type.end());
-  crc_input.insert(crc_input.end(), chunk_data.begin(), chunk_data.end());
-  const auto checksum = crc32_fn(crc_input);
-  const std::array<std::uint8_t, 4> crc_bytes{static_cast<std::uint8_t>(checksum >> 24U),
-                                               static_cast<std::uint8_t>(checksum >> 16U),
-                                               static_cast<std::uint8_t>(checksum >> 8U),
-                                               static_cast<std::uint8_t>(checksum)};
-  stream.write(reinterpret_cast<const char*>(crc_bytes.data()),
-               static_cast<std::streamsize>(crc_bytes.size()));
+  std::error_code ec;
+  std::filesystem::remove(bin_path, ec);
+  std::filesystem::remove(meta_path, ec);
+  logger.info("Wrote GeoTIFF " + path.string());
 }
 
 }  // namespace dem

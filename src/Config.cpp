@@ -319,24 +319,28 @@ DEMConfig ConfigManager::parse(const nlohmann::json& root) const {
  * @brief 归一化派生参数：将值为 0（表示"自动计算"）的字段替换为基于 cell_size 的合理默认值
  *
  * 自动计算的规则：
- * - seed_grid_size / search_radius / nearest_max_distance / idw_radius → cell_size × 3
- * - tile_buffer → max(cell_size×3, idw_radius, search_radius)
+ * - seed_grid_size → cell_size × 3
+ * - search_radius → max(cell_size×6, seed_grid_size×2)
+ * - nearest_max_distance → max(cell_size×6, search_radius)
+ * - idw_radius → max(cell_size×8, search_radius + cell_size×2)
+ * - tile_buffer → max(search_radius, nearest_max_distance, idw_radius) + fill_max_radius×cell_size
  */
 void ConfigManager::normalizeDerivedValues(DEMConfig& config) const {
   if (config.ground.seed_grid_size <= 0.0) {
     config.ground.seed_grid_size = 3.0 * config.dem.cell_size;
   }
   if (config.ground.search_radius <= 0.0) {
-    config.ground.search_radius = 3.0 * config.dem.cell_size;
+    config.ground.search_radius = std::max(6.0 * config.dem.cell_size, 2.0 * config.ground.seed_grid_size);
   }
   if (config.dem.nearest_max_distance <= 0.0) {
-    config.dem.nearest_max_distance = 3.0 * config.dem.cell_size;
+    config.dem.nearest_max_distance = std::max(6.0 * config.dem.cell_size, config.ground.search_radius);
   }
   if (config.dem.idw_radius <= 0.0) {
-    config.dem.idw_radius = 3.0 * config.dem.cell_size;
+    config.dem.idw_radius = std::max(8.0 * config.dem.cell_size, config.ground.search_radius + 2.0 * config.dem.cell_size);
   }
   if (config.tile.tile_buffer <= 0.0) {
-    config.tile.tile_buffer = std::max({3.0 * config.dem.cell_size, config.dem.idw_radius, config.ground.search_radius});
+    config.tile.tile_buffer = std::max({config.ground.search_radius, config.dem.nearest_max_distance, config.dem.idw_radius}) +
+                              static_cast<double>(std::max(0, config.dem.fill_max_radius)) * config.dem.cell_size;
   }
 }
 

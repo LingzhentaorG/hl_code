@@ -5,6 +5,7 @@
 
 #include "dem/PreprocessEngine.hpp"
 
+#include "dem/SpatialIndexManager.hpp"
 #include "dem/Utils.hpp"
 
 #include <algorithm>
@@ -229,37 +230,36 @@ void PreprocessEngine::estimateSpacing(PointCloud& cloud, const DEMConfig& confi
     return;
   }
 
-  /* 按固定步长采样索引 */
-  const auto sample = sampleValues(cloud.points, config.preprocess.sample_spacing_count, [](const Point3D& p) {
-    return p.x;
-  });
-  const std::size_t sample_count = sample.size();
-  if (sample_count < 2) {
-    cloud.estimated_avg_spacing = 0.0;
-    return;
-  }
-
+  /* 按固定步长采样索引，并在采样点集上建立 2D KD-Tree */
+  const std::size_t sample_count =
+      std::min<std::size_t>(cloud.points.size(), std::max<std::size_t>(2U, config.preprocess.sample_spacing_count));
   const std::size_t step = std::max<std::size_t>(1, cloud.points.size() / sample_count);
   std::vector<std::size_t> sample_indices;
   sample_indices.reserve(sample_count);
   for (std::size_t i = 0; i < cloud.points.size() && sample_indices.size() < sample_count; i += step) {
     sample_indices.push_back(i);
   }
+  if (sample_indices.size() < 2U) {
+    cloud.estimated_avg_spacing = 0.0;
+    return;
+  }
 
-  /* 计算每个采样点到其最近邻的 2D 距离，取均值 */
+  SpatialIndexManager index;
+  index.build2D(cloud.points, sample_indices);
+
+  /* 查询采样点的最近非自身邻居，避免“稀疏采样子集互找最近邻”带来的虚高间距 */
   double total_distance = 0.0;
   std::size_t counted = 0;
-  for (std::size_t i = 0; i < sample_indices.size(); ++i) {
-    const auto& point = cloud.points[sample_indices[i]];
+  for (const auto sample_idx : sample_indices) {
+    const auto& point = cloud.points[sample_idx];
+    const auto neighbors = index.knn2D(point.x, point.y, 2U);
     double nearest = std::numeric_limits<double>::infinity();
-    for (std::size_t j = 0; j < sample_indices.size(); ++j) {
-      if (i == j) {
+    for (std::size_t i = 0; i < neighbors.indices.size(); ++i) {
+      if (neighbors.indices[i] == sample_idx || neighbors.distances[i] <= 1e-9) {
         continue;
       }
-      const auto& other = cloud.points[sample_indices[j]];
-      const double dx = point.x - other.x;
-      const double dy = point.y - other.y;
-      nearest = std::min(nearest, std::sqrt(dx * dx + dy * dy));
+      nearest = neighbors.distances[i];
+      break;
     }
     if (std::isfinite(nearest)) {
       total_distance += nearest;

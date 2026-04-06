@@ -116,8 +116,10 @@ PointCloud GroundFilterEngine::removeOutliers(PointCloud cloud,
   /* 过滤掉超过阈值的离群点 */
   PointCloud filtered;
   filtered.raw_point_count = cloud.raw_point_count;
-  filtered.stored_point_count = filtered.points.size();
   filtered.property_names = cloud.property_names;
+  filtered.estimated_avg_spacing = cloud.estimated_avg_spacing;
+  filtered.estimated_density = cloud.estimated_density;
+  filtered.staging_xyz_path = cloud.staging_xyz_path;
   filtered.points.reserve(cloud.points.size());
   std::size_t removed = 0;
   for (auto& point : cloud.points) {
@@ -133,6 +135,7 @@ PointCloud GroundFilterEngine::removeOutliers(PointCloud cloud,
   for (const auto& point : filtered.points) {
     filtered.bounds.expand(point.x, point.y, point.z);
   }
+  filtered.stored_point_count = filtered.points.size();
   stats.setCount("outlier_removed_count", removed);
   stats.setCount("filtered_point_count", filtered.points.size());
   stats.setValue("outlier_removed_ratio",
@@ -221,12 +224,12 @@ void GroundFilterEngine::extractGround(PointCloud& filtered_cloud,
         neighbors.distances.resize(config.ground.knn);
       }
 
-      /* 检查邻域完整度（8 扇区），不满足则标记为边缘点 */
-      const double completeness =
-          neighborhoodCompleteness(filtered_cloud.points, neighbors.indices, candidate.x, candidate.y);
+      /* 检查邻域完整度（8 扇区），但不再把低完整度直接当作硬拒绝 */
+      const auto occupied_sectors = occupiedSectors8(candidate.x, candidate.y, filtered_cloud.points, neighbors.indices);
+      const double completeness = static_cast<double>(occupied_sectors) / 8.0;
       candidate.neighborhood_completeness = completeness;
       candidate.edge_point = completeness < config.ground.min_neighbor_completeness;
-      if (candidate.edge_point) { continue; }
+      if (occupied_sectors < 2U) { continue; }
 
       /* 使用多参考模式进行最终分类判定 */
       if (classifyCandidate(candidate, filtered_cloud, neighbors.indices, config, stats)) {
@@ -240,7 +243,7 @@ void GroundFilterEngine::extractGround(PointCloud& filtered_cloud,
     }
     stats.ground_added_per_iteration.push_back(new_ground_indices.size());
     logger.info("Ground iteration " + std::to_string(iteration + 1) +
-                " added " + std::to_string(new_ground_indices.size()) + " points);
+                " added " + std::to_string(new_ground_indices.size()) + " points");
 
     /* 收敛判断：无新增或新增比例极低则终止迭代 */
     if (new_ground_indices.empty() ||
@@ -338,7 +341,25 @@ std::vector<std::size_t> GroundFilterEngine::seedGroundPoints(PointCloud& cloud,
   /* 提取所有种子点索引 */
   std::vector<std::size_t> seeds;
   seeds.reserve(lowest_by_cell.size());
-  for (const auto& [_, idx] : lowest_by_cell) {
+  for (const auto& [cell, idx] : lowest_by_cell) {
+    std::vector<double> neighbor_lows;
+    for (long long dy = -1; dy <= 1; ++dy) {
+      for (long long dx = -1; dx <= 1; ++dx) {
+        if (dx == 0 && dy == 0) {
+          continue;
+        }
+        const CellKey neighbor_key{cell.x + dx, cell.y + dy};
+        const auto it = lowest_by_cell.find(neighbor_key);
+        if (it == lowest_by_cell.end()) {
+          continue;
+        }
+        neighbor_lows.push_back(cloud.points[it->second].z);
+      }
+    }
+    if (neighbor_lows.size() >= 4U &&
+        cloud.points[idx].z > median(neighbor_lows) + config.ground.max_height_diff) {
+      continue;
+    }
     seeds.push_back(idx);
   }
   return seeds;
@@ -449,12 +470,21 @@ bool GroundFilterEngine::classifyCandidate(Point3D& candidate,
   if (!success) { return false; }
 
   /* 记录分类中间结果并执行最终阈值判定 */
+  std::vector<double> neighbor_heights;
+  neighbor_heights.reserve(neighbor_indices.size());
+  for (const auto idx : neighbor_indices) {
+    neighbor_heights.push_back(cloud.points[idx].z);
+  }
+  const double neighborhood_median_z =
+      neighbor_heights.empty() ? std::numeric_limits<double>::infinity() : median(neighbor_heights);
+
   candidate.reference_z = reference_z;
   candidate.local_height_diff = std::abs(candidate.z - reference_z);
   candidate.local_slope = slope_deg;
   stats.reference_mode_counts[mode_key] += 1;
 
   return candidate.local_height_diff <= config.ground.max_height_diff &&
+         candidate.z <= neighborhood_median_z + config.ground.max_height_diff &&
          candidate.local_slope <= config.ground.max_slope_deg;
 }
 

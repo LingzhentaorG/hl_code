@@ -25,9 +25,10 @@ TEST_CASE("config manager loads and normalizes derived values") {
   const auto config = manager.load(config_path, {"dem.cell_size=3.0", "tile.mode=\"forced\""});
 
   CHECK(config.dem.cell_size == doctest::Approx(3.0));
-  CHECK(config.ground.search_radius == doctest::Approx(9.0));
+  CHECK(config.ground.search_radius == doctest::Approx(18.0));
   CHECK(config.ground.seed_grid_size == doctest::Approx(9.0));
-  CHECK(config.dem.idw_radius == doctest::Approx(9.0));
-  CHECK(config.tile.tile_buffer == doctest::Approx(9.0));
+  CHECK(config.dem.nearest_max_distance == doctest::Approx(18.0));
+  CHECK(config.dem.idw_radius == doctest::Approx(24.0));
+  CHECK(config.tile.tile_buffer == doctest::Approx(30.0));
   CHECK(config.tile.mode == dem::TileMode::Forced);
 }

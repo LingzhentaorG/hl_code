@@ -134,7 +134,7 @@ InputValidationReport InputManager::validateInput(const std::filesystem::path& f
   stats.setValue("input_bounds_xmin", report.summary.bounds.xmin);
   stats.setValue("input_bounds_xmax", report.summary.bounds.xmax);
   stats.setValue("input_bounds_ymin", report.summary.bounds.ymin);
-  stats.setValue("input_bounds_ymax", report.summary.ymax);
+  stats.setValue("input_bounds_ymax", report.summary.bounds.ymax);
   stats.setValue("input_bounds_zmin", report.summary.bounds.zmin);
   stats.setValue("input_bounds_zmax", report.summary.bounds.zmax);
   stats.setValue("estimated_memory_mb", report.summary.estimated_memory_mb);
