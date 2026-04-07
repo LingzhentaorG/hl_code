@@ -32,6 +32,15 @@ class MainController {
   int run(const std::filesystem::path& config_path, const std::vector<std::string>& overrides);
 
  private:
+  struct SupportStageArtifacts {
+    PointCloud filtered_points;
+    PointCloud seed_points;
+    PointCloud ground_points;
+    PointCloud nonground_points;
+    RasterGrid raw_direct;
+    RasterGrid ground_direct;
+  };
+
   /**
    * @brief 处理单个点云的支持阶段，只生成点级分类和直落格产物
    * @param cloud 输入点云
@@ -41,25 +50,24 @@ class MainController {
    * @param forced_grid_bounds 强制指定的栅格边界（Tile 模式下使用）
    * @return 支持阶段产物
    */
-  ProcessingArtifacts processSupportStage(PointCloud cloud,
-                                          const DEMConfig& config,
-                                          Logger& logger,
-                                          ProcessStats& stats,
-                                          const Bounds* forced_grid_bounds) const;
+  SupportStageArtifacts processSupportStage(PointCloud cloud,
+                                            const DEMConfig& config,
+                                            Logger& logger,
+                                            ProcessStats& stats,
+                                            const Bounds* forced_grid_bounds) const;
 
   /**
-   * @brief 基于全局 support/domain 构建最终 DEM/DTM/QC 产物
-   * @param artifacts 输入输出产物集合
+   * @brief 基于全局 support/domain 构建最终官方 DEM/QC 产物
+   * @param support_stage 输入支持阶段产物
    * @param config DEM 配置参数
    * @param logger 日志记录器
    * @param stats 统计信息收集器
-   * @param tiles tile 定义（可选，用于 seam 风险评估）
+   * @return 最终正式产物集合
    */
-  void finalizeArtifacts(ProcessingArtifacts& artifacts,
-                         const DEMConfig& config,
-                         Logger& logger,
-                         ProcessStats& stats,
-                         const std::vector<TileDefinition>* tiles = nullptr) const;
+  ProcessingArtifacts finalizeArtifacts(const SupportStageArtifacts& support_stage,
+                                        const DEMConfig& config,
+                                        Logger& logger,
+                                        ProcessStats& stats) const;
 
   /**
    * @brief 处理单个点云的完整 DEM 生成流程
@@ -68,7 +76,6 @@ class MainController {
    * @param logger 日志记录器
    * @param stats 统计信息收集器
    * @param forced_grid_bounds 强制指定的栅格边界（Tile 模式下使用）
-   * @param apply_edge_shrink 是否应用边缘收缩
    * @return 所有处理产物（栅格、分类点云等）
    */
   ProcessingArtifacts processSingleCloud(PointCloud cloud,

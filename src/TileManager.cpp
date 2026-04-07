@@ -42,7 +42,8 @@ class TileStreamCache {
     CachedTileStream entry;
     entry.stream.open(tiles_[tile_index].temp_points_file, std::ios::out | std::ios::app);
     if (!entry.stream) {
-      throw std::runtime_error("Unable to open tile temp file: " + tiles_[tile_index].temp_points_file.string());
+      throw std::runtime_error("Unable to open tile temp file: " +
+                               pathToUtf8String(tiles_[tile_index].temp_points_file));
     }
     entry.last_used = access_counter_;
     auto [inserted, _] = cache_.emplace(tile_index, std::move(entry));

@@ -1,1 +1,64 @@
-{"_comment": "DEM 生成器示例配置文件 - 光学测绘卫星摄影测量点云处理", "input": {"_comment": "输入文件配置段", "file_path": "../data/基准.ply", "_description": "输入的 ASCII PLY 格式点云文件路径（相对或绝对路径均可）"}, "crs": {"_comment": "坐标参考系（CRS）配置段", "epsg_code": 4326, "_description": "EPSG 编码，4326=WGS84 经纬度坐标系，适用于大多数卫星影像产品", "allow_unknown_crs": false, "_description": "是否允许未知 CRS 继续处理。生产环境建议设为 false 以确保地理参考正确性"}, "preprocess": {"_comment": "预处理阶段参数配置", "sample_spacing_count": 512, "_description": "用于估算平均点间距的采样点数。值越大估算越精确但耗时更长", "max_extreme_sample": 5000, "_description": "极端离群点剔除时各坐标轴的最大采样数。用于计算分位数范围"}, "outlier": {"_comment": "KNN 离群点过滤参数配置", "knn": 16, "_description": "每个点的 K 近邻数量。增大可提高统计稳定性但增加计算量", "stddev_multiplier": 1.5, "_description": "标准差倍数阈值。mean + multiplier × stddev 以上的点被判定为离群点", "use_robust_stat": false, "_description": "是否使用鲁棒统计方法（中位数+MAD）。true=抗异常值干扰更强"}, "ground": {"_comment": "地面滤波核心算法参数配置（最关键的部分）", "seed_grid_size": 0.0, "_description": "粗格网种子选取的格网尺寸。0=自动根据分辨率计算（通常取 cell_size×3）", "knn": 8, "_description": "地面点扩张时使用的近邻点数量。影响局部地形拟合精度", "search_radius": 0.0, "_description": "地面点邻域搜索半径。0=自动计算（通常取 seed_grid_size×2 或 cell_size×6）", "max_height_diff": 1.0, "_description": "候选点到参考平面的最大允许高程差（米）。超过则判定为非地面点", "max_slope_deg": 20.0, "_description": "最大允许坡角（度）。陡峭区域可能需要适当放宽此阈值", "max_iterations": 6, "_description": "迭代式地面点扩张的最大轮次。复杂地形建议增加到 8~10", "min_ground_neighbors": 3, "_description": "判定地面点所需的最小地面近邻数量。低于此数的边缘区域将被跳过", "reference_mode": "local_plane", "_description": "首选参考模式：local_plane=最小二乘平面拟合, inverse_distance_squared=IDW加权, local_min=最低点", "reference_fallback_mode": "inverse_distance_squared", "_description": "首选模式失败时的回退参考模式", "distance_weight_power": 2.0, "_description": "IDW 权重的距离幂次。2=标准反距离平方，值越大近邻权重越高", "min_neighbor_completeness": 0.5, "_description": "8扇区邻域完整度阈值 [0,1]。低于此值的边缘点不参与分类判定"}, "dem": {"_comment": "DEM 插值与栅格输出参数配置", "cell_size": 8.0, "_description": "DEM 栅格分辨率（米/像素）。值越小精度越高但文件越大", "nearest_max_distance": 0.0, "_description": "最近邻插值的最大搜索半径。0=自动计算", "idw_radius": 0.0, "_description": "IDW 插值的搜索半径。0=自动计算（通常取 cell_size×3~5）", "idw_max_points": 12, "_description": "IDW 插值使用的最大近邻点数", "idw_min_points": 3, "_description": "IDW 插值所需的最小有效近邻点数，不足则标记为 NoData", "idw_power": 2.0, "_description": "IDW 权重的距离幂次", "nodata": -9999.0, "_description": "NoData（无效像素）的填充值。应选择在正常高程范围外的数值", "edge_shrink_cells": 1.0, "_description": "边缘收缩像素数。用于去除边界处不可靠的插值结果", "enable_edge_mask": true, "_description": "是否生成边缘掩码图像（标识可靠/不可靠区域）", "fill_holes": true, "_description": "是否启用空洞填充后处理步骤", "fill_max_radius": 2, "_description": "空洞填充的最大扩散半径（像素单位）", "fill_min_neighbors": 4, "_description": "填充一个空洞所需的最小有效邻居数量"}, "tile": {"_comment": "大点云分块处理参数配置（内存敏感场景使用）", "mode": "auto", "_description": "分块模式：auto=根据内存自动判断, forced=强制分块, disabled=禁用分块", "tile_size_cells": 1000, "_description": "单个分块的近似像素尺寸（cell_size 为单位）。影响每块处理的地理范围", "tile_buffer": 0.0, "_description": "分块间的缓冲区宽度（米）。防止分块边界出现伪影", "memory_limit_mb": 512, "_description": "单分块允许的最大内存占用（MB）。超出时自动启用分块模式"}, "output": {"_comment": "输出控制参数配置", "directory": "../output", "_description": "输出根目录路径", "overwrite": true, "_description": "是否覆盖已存在的输出文件", "write_png": true, "_description": "是否生成 PNG 格式的 DEM 可视化图像", "timestamp_subdir": true, "_description": "是否在输出目录下创建时间戳子目录（如 output/20250115_103045/）"}}
+{
+  "_comment": "DEM 生成器示例配置文件 - 单一官方 DEM 产线",
+  "input": {
+    "file_path": "../data/基准.ply",
+    "_description_file_path": "输入的 ASCII PLY 点云文件路径"
+  },
+  "crs": {
+    "epsg_code": 4326,
+    "allow_unknown_crs": false,
+    "_description_epsg_code": "输出 GeoTIFF 写入的 EPSG 编码",
+    "_description_allow_unknown_crs": "是否允许未知 CRS 继续处理"
+  },
+  "preprocess": {
+    "sample_spacing_count": 512,
+    "max_extreme_sample": 5000,
+    "_description": "基础预处理与极端异常值采样参数"
+  },
+  "outlier": {
+    "knn": 16,
+    "stddev_multiplier": 1.5,
+    "use_robust_stat": false,
+    "_description": "SOR 离群点过滤参数"
+  },
+  "ground": {
+    "seed_grid_size": 0.0,
+    "knn": 8,
+    "search_radius": 0.0,
+    "max_height_diff": 1.0,
+    "max_slope_deg": 20.0,
+    "max_iterations": 6,
+    "min_ground_neighbors": 3,
+    "reference_mode": "local_plane",
+    "reference_fallback_mode": "inverse_distance_squared",
+    "distance_weight_power": 2.0,
+    "min_neighbor_completeness": 0.5,
+    "_description": "地面点提取与支撑精炼参数"
+  },
+  "dem": {
+    "cell_size": 8.0,
+    "idw_k": 12,
+    "idw_min_points": 3,
+    "idw_max_distance": 0.0,
+    "idw_allow_fallback": true,
+    "idw_power": 2.0,
+    "nodata": -9999.0,
+    "boundary_outline_cells": 1.0,
+    "_description": "官方 DEM 使用 ArcGIS 风格 KNN IDW；idw_max_distance<=0 时按输出范围对角线"
+  },
+  "tile": {
+    "mode": "auto",
+    "tile_size_cells": 1000,
+    "tile_buffer": 0.0,
+    "memory_limit_mb": 512,
+    "_description": "大点云分块处理参数"
+  },
+  "output": {
+    "directory": "../output",
+    "overwrite": true,
+    "write_png": true,
+    "timestamp_subdir": true,
+    "write_debug_pointclouds": false,
+    "_description": "默认输出 surface/mask/log；pointcloud 仅在调试开关开启时写出"
+  }
+}

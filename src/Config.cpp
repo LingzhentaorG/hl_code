@@ -62,6 +62,22 @@ TileMode parseTileMode(const std::string& value) {
   throw std::runtime_error("Unsupported tile mode: " + value);
 }
 
+void rejectDeprecatedDemKey(const nlohmann::json& dem, const char* key, const char* replacement) {
+  if (!dem.contains(key)) {
+    return;
+  }
+  std::string message = "dem.";
+  message += key;
+  message += " has been removed from the official pipeline";
+  if (replacement != nullptr && *replacement != '\0') {
+    message += "; use ";
+    message += replacement;
+    message += " instead";
+  }
+  message += ".";
+  throw std::runtime_error(message);
+}
+
 /**
  * @brief 将命令行覆盖参数的原始值解析为合适的 JSON 类型
  * 自动识别布尔值、数值和纯字符串
@@ -96,7 +112,7 @@ nlohmann::json parseOverrideValue(const std::string& raw_value) {
 DEMConfig ConfigManager::load(const std::filesystem::path& path, const std::vector<std::string>& overrides) const {
   std::ifstream stream(path);
   if (!stream) {
-    throw std::runtime_error("Unable to open config file: " + path.string());
+    throw std::runtime_error("Unable to open config file: " + pathToUtf8String(path));
   }
 
   nlohmann::json root;
@@ -111,15 +127,15 @@ DEMConfig ConfigManager::load(const std::filesystem::path& path, const std::vect
 /**
  * @brief 将解析后的完整配置以 JSON 格式写入文件，用于记录实际使用的参数
  *
- * 输出文件通常命名为 config_used.txt，存放在 log 子目录下，
+ * 输出文件通常命名为 config_used.json，存放在 log 子目录下，
  * 方便用户复现和审计每次运行的实际参数。
  */
 void ConfigManager::writeResolvedConfig(const DEMConfig& config, const std::filesystem::path& output_path) const {
   nlohmann::json root;
-  root["input"]["file_path"] = config.input.file_path.string();
+  root["input"]["file_path"] = pathToGenericUtf8String(config.input.file_path);
   root["crs"]["epsg_code"] = config.crs.epsg_code;
   root["crs"]["crs_wkt"] = config.crs.crs_wkt;
-  root["crs"]["crs_wkt_file"] = config.crs.crs_wkt_file.string();
+  root["crs"]["crs_wkt_file"] = pathToGenericUtf8String(config.crs.crs_wkt_file);
   root["crs"]["allow_unknown_crs"] = config.crs.allow_unknown_crs;
   root["preprocess"]["sample_spacing_count"] = config.preprocess.sample_spacing_count;
   root["preprocess"]["max_extreme_sample"] = config.preprocess.max_extreme_sample;
@@ -147,26 +163,23 @@ void ConfigManager::writeResolvedConfig(const DEMConfig& config, const std::file
   root["ground"]["distance_weight_power"] = config.ground.distance_weight_power;
   root["ground"]["min_neighbor_completeness"] = config.ground.min_neighbor_completeness;
   root["dem"]["cell_size"] = config.dem.cell_size;
-  root["dem"]["nearest_max_distance"] = config.dem.nearest_max_distance;
-  root["dem"]["idw_radius"] = config.dem.idw_radius;
-  root["dem"]["idw_max_points"] = config.dem.idw_max_points;
+  root["dem"]["idw_k"] = config.dem.idw_k;
   root["dem"]["idw_min_points"] = config.dem.idw_min_points;
+  root["dem"]["idw_max_distance"] = config.dem.idw_max_distance;
+  root["dem"]["idw_allow_fallback"] = config.dem.idw_allow_fallback;
   root["dem"]["idw_power"] = config.dem.idw_power;
   root["dem"]["nodata"] = config.dem.nodata;
-  root["dem"]["edge_shrink_cells"] = config.dem.edge_shrink_cells;
-  root["dem"]["enable_edge_mask"] = config.dem.enable_edge_mask;
-  root["dem"]["fill_holes"] = config.dem.fill_holes;
-  root["dem"]["fill_max_radius"] = config.dem.fill_max_radius;
-  root["dem"]["fill_min_neighbors"] = config.dem.fill_min_neighbors;
+  root["dem"]["boundary_outline_cells"] = config.dem.boundary_outline_cells;
   root["tile"]["mode"] =
       config.tile.mode == TileMode::Auto ? "auto" : (config.tile.mode == TileMode::Disabled ? "disabled" : "forced");
   root["tile"]["tile_size_cells"] = config.tile.tile_size_cells;
   root["tile"]["tile_buffer"] = config.tile.tile_buffer;
   root["tile"]["memory_limit_mb"] = config.tile.memory_limit_mb;
-  root["output"]["directory"] = config.output.directory.string();
+  root["output"]["directory"] = pathToGenericUtf8String(config.output.directory);
   root["output"]["overwrite"] = config.output.overwrite;
   root["output"]["write_png"] = config.output.write_png;
   root["output"]["timestamp_subdir"] = config.output.timestamp_subdir;
+  root["output"]["write_debug_pointclouds"] = config.output.write_debug_pointclouds;
 
   ensureDirectory(output_path.parent_path());
   std::ofstream out(output_path);
@@ -272,18 +285,23 @@ DEMConfig ConfigManager::parse(const nlohmann::json& root) const {
   /* DEM 生成段 */
   if (root.contains("dem")) {
     const auto& dem = root.at("dem");
-    config.dem.cell_size = readOr<double>(dem, "cell_size", 1.0);
-    config.dem.nearest_max_distance = readOr<double>(dem, "nearest_max_distance", 0.0);
-    config.dem.idw_radius = readOr<double>(dem, "idw_radius", 0.0);
-    config.dem.idw_max_points = readOr<std::size_t>(dem, "idw_max_points", 12);
+    rejectDeprecatedDemKey(dem, "nearest_max_distance", "dem.idw_max_distance");
+    rejectDeprecatedDemKey(dem, "idw_mode", "");
+    rejectDeprecatedDemKey(dem, "idw_radius", "");
+    rejectDeprecatedDemKey(dem, "idw_max_points", "dem.idw_k");
+    rejectDeprecatedDemKey(dem, "edge_shrink_cells", "dem.boundary_outline_cells");
+    rejectDeprecatedDemKey(dem, "enable_edge_mask", "");
+    rejectDeprecatedDemKey(dem, "fill_holes", "");
+    rejectDeprecatedDemKey(dem, "fill_max_radius", "");
+    rejectDeprecatedDemKey(dem, "fill_min_neighbors", "");
+    config.dem.cell_size = readOr<double>(dem, "cell_size", 8.0);
+    config.dem.idw_k = readOr<std::size_t>(dem, "idw_k", 12);
     config.dem.idw_min_points = readOr<std::size_t>(dem, "idw_min_points", 3);
+    config.dem.idw_max_distance = readOr<double>(dem, "idw_max_distance", 0.0);
+    config.dem.idw_allow_fallback = readOr<bool>(dem, "idw_allow_fallback", true);
     config.dem.idw_power = readOr<double>(dem, "idw_power", 2.0);
     config.dem.nodata = readOr<double>(dem, "nodata", -9999.0);
-    config.dem.edge_shrink_cells = readOr<double>(dem, "edge_shrink_cells", 1.0);
-    config.dem.enable_edge_mask = readOr<bool>(dem, "enable_edge_mask", true);
-    config.dem.fill_holes = readOr<bool>(dem, "fill_holes", true);
-    config.dem.fill_max_radius = readOr<int>(dem, "fill_max_radius", 2);
-    config.dem.fill_min_neighbors = readOr<std::size_t>(dem, "fill_min_neighbors", 4);
+    config.dem.boundary_outline_cells = readOr<double>(dem, "boundary_outline_cells", 1.0);
   }
 
   /* Tile 分块段 */
@@ -306,10 +324,12 @@ DEMConfig ConfigManager::parse(const nlohmann::json& root) const {
     config.output.overwrite = readOr<bool>(output, "overwrite", true);
     config.output.write_png = readOr<bool>(output, "write_png", true);
     config.output.timestamp_subdir = readOr<bool>(output, "timestamp_subdir", true);
+    config.output.write_debug_pointclouds = readOr<bool>(output, "write_debug_pointclouds", false);
   } else {
     config.output.directory = "output";
     config.output.write_png = true;
     config.output.timestamp_subdir = true;
+    config.output.write_debug_pointclouds = false;
   }
 
   return config;
@@ -321,9 +341,8 @@ DEMConfig ConfigManager::parse(const nlohmann::json& root) const {
  * 自动计算的规则：
  * - seed_grid_size → cell_size × 3
  * - search_radius → max(cell_size×6, seed_grid_size×2)
- * - nearest_max_distance → max(cell_size×6, search_radius)
- * - idw_radius → max(cell_size×8, search_radius + cell_size×2)
- * - tile_buffer → max(search_radius, nearest_max_distance, idw_radius) + fill_max_radius×cell_size
+ * - idw_max_distance ≤ 0 → 保持为 0，表示 arcgis_like 模式下运行时自动取输出范围对角线长度
+ * - tile_buffer → max(search_radius, positive(idw_max_distance))
  */
 void ConfigManager::normalizeDerivedValues(DEMConfig& config) const {
   if (config.ground.seed_grid_size <= 0.0) {
@@ -332,15 +351,8 @@ void ConfigManager::normalizeDerivedValues(DEMConfig& config) const {
   if (config.ground.search_radius <= 0.0) {
     config.ground.search_radius = std::max(6.0 * config.dem.cell_size, 2.0 * config.ground.seed_grid_size);
   }
-  if (config.dem.nearest_max_distance <= 0.0) {
-    config.dem.nearest_max_distance = std::max(6.0 * config.dem.cell_size, config.ground.search_radius);
-  }
-  if (config.dem.idw_radius <= 0.0) {
-    config.dem.idw_radius = std::max(8.0 * config.dem.cell_size, config.ground.search_radius + 2.0 * config.dem.cell_size);
-  }
   if (config.tile.tile_buffer <= 0.0) {
-    config.tile.tile_buffer = std::max({config.ground.search_radius, config.dem.nearest_max_distance, config.dem.idw_radius}) +
-                              static_cast<double>(std::max(0, config.dem.fill_max_radius)) * config.dem.cell_size;
+    config.tile.tile_buffer = std::max(config.ground.search_radius, std::max(0.0, config.dem.idw_max_distance));
   }
 }
 
@@ -360,6 +372,15 @@ void ConfigManager::validate(const DEMConfig& config) const {
   if (config.dem.cell_size <= 0.0) {
     throw std::runtime_error("dem.cell_size must be > 0.");
   }
+  if (config.dem.idw_k < 1) {
+    throw std::runtime_error("dem.idw_k must be >= 1.");
+  }
+  if (config.dem.idw_min_points < 1) {
+    throw std::runtime_error("dem.idw_min_points must be >= 1.");
+  }
+  if (config.dem.idw_min_points > config.dem.idw_k) {
+    throw std::runtime_error("dem.idw_min_points must be <= dem.idw_k.");
+  }
   if (config.dem.idw_power <= 0.0) {
     throw std::runtime_error("dem.idw_power must be > 0.");
   }
@@ -372,8 +393,8 @@ void ConfigManager::validate(const DEMConfig& config) const {
   if (config.ground.max_iterations < 1) {
     throw std::runtime_error("ground.max_iterations must be >= 1.");
   }
-  if (config.dem.fill_max_radius < 0) {
-    throw std::runtime_error("dem.fill_max_radius must be >= 0.");
+  if (config.dem.boundary_outline_cells < 0.0) {
+    throw std::runtime_error("dem.boundary_outline_cells must be >= 0.");
   }
   if (config.tile.tile_size_cells < 1) {
     throw std::runtime_error("tile.tile_size_cells must be >= 1.");

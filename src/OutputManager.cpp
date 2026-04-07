@@ -36,7 +36,7 @@ struct MaskRasterSummary {
 
 #ifndef _WIN32
 std::string quoteForShell(const std::filesystem::path& path) {
-  return "\"" + path.generic_string() + "\"";
+  return "\"" + pathToGenericUtf8String(path) + "\"";
 }
 #endif
 
@@ -104,58 +104,48 @@ void OutputManager::writeArtifacts(const ProcessingArtifacts& artifacts,
                                    ProcessStats& stats) const {
   ScopedTimer timer(stats, "output_write_seconds");
 
-  const auto dem_dir = config.output.directory / "dem";
-  const auto pointcloud_dir = config.output.directory / "pointcloud";
+  const auto surface_dir = config.output.directory / "surface";
+  const auto mask_dir = config.output.directory / "mask";
   const auto log_dir = config.output.directory / "log";
-  ensureDirectory(dem_dir);
-  ensureDirectory(pointcloud_dir);
+  ensureDirectory(surface_dir);
+  ensureDirectory(mask_dir);
   ensureDirectory(log_dir);
 
-  writePointCloudPly(artifacts.filtered_points, pointcloud_dir / "filtered_points.ply");
-  writePointCloudPly(artifacts.seed_points, pointcloud_dir / "seed_points.ply");
-  writePointCloudPly(artifacts.ground_points, pointcloud_dir / "ground_points.ply");
-  writePointCloudPly(artifacts.nonground_points, pointcloud_dir / "nonground_points.ply");
+  if (config.output.write_debug_pointclouds) {
+    const auto pointcloud_dir = config.output.directory / "pointcloud";
+    ensureDirectory(pointcloud_dir);
+    writePointCloudPly(artifacts.filtered_points, pointcloud_dir / "filtered_points.ply");
+    writePointCloudPly(artifacts.ground_points, pointcloud_dir / "ground_points.ply");
+  }
 
-  writeGeoTiff(artifacts.dem_raw_direct, config, crs, dem_dir / "dem_raw_direct.tif", logger);
-  writeGeoTiff(artifacts.dem_ground_direct, config, crs, dem_dir / "dem_ground_direct.tif", logger);
-  writeGeoTiff(artifacts.dem_nearest, config, crs, dem_dir / "dem_nearest.tif", logger);
-  writeGeoTiff(artifacts.dem_idw, config, crs, dem_dir / "dem_idw.tif", logger);
-  writeGeoTiff(artifacts.dem_nearest_filled, config, crs, dem_dir / "dem_nearest_filled.tif", logger);
-  writeGeoTiff(artifacts.dem_idw_filled, config, crs, dem_dir / "dem_idw_filled.tif", logger);
-  writeGeoTiff(artifacts.dem_support_mask, config, crs, dem_dir / "dem_support_mask.tif", logger);
-  writeGeoTiff(artifacts.dem_mask, config, crs, dem_dir / "dem_mask.tif", logger);
-  writeGeoTiff(artifacts.dem_edge_mask, config, crs, dem_dir / "dem_edge_mask.tif", logger);
-  writeGeoTiff(artifacts.dtm_analysis, config, crs, dem_dir / "dtm_analysis.tif", logger);
-  writeGeoTiff(artifacts.dtm_display, config, crs, dem_dir / "dtm_display.tif", logger);
-  writeGeoTiff(artifacts.dtm_object_mask, config, crs, dem_dir / "dtm_object_mask.tif", logger);
+  writeGeoTiff(artifacts.dem, config, crs, surface_dir / "dem.tif", logger);
+  writeGeoTiff(artifacts.dem_raw, config, crs, surface_dir / "dem_raw.tif", logger);
+  writeGeoTiff(artifacts.dem_domain_mask, config, crs, mask_dir / "dem_domain_mask.tif", logger);
+  writeGeoTiff(artifacts.dem_boundary_mask, config, crs, mask_dir / "dem_boundary_mask.tif", logger);
+  writeGeoTiff(artifacts.dem_object_mask, config, crs, mask_dir / "dem_object_mask.tif", logger);
 
   writeStats(artifacts, config, stats, log_dir / "stats.txt");
 
   nlohmann::json report;
-  report["metadata"]["input_file"] = config.input.file_path.string();
-  report["metadata"]["output_directory"] = config.output.directory.string();
+  report["metadata"]["input_file"] = pathToGenericUtf8String(config.input.file_path);
+  report["metadata"]["output_directory"] = pathToGenericUtf8String(config.output.directory);
   report["crs"]["authority_name"] = crs.authority_name;
   report["crs"]["epsg_code"] = crs.epsg_code;
   report["crs"]["known"] = crs.known;
-  report["raster"]["dem_raw_direct"]["valid_ratio"] = summarizeContinuousRaster(artifacts.dem_raw_direct).valid_ratio;
-  report["raster"]["dem_ground_direct"]["valid_ratio"] = summarizeContinuousRaster(artifacts.dem_ground_direct).valid_ratio;
-  report["raster"]["dem_nearest"]["valid_ratio"] = summarizeContinuousRaster(artifacts.dem_nearest).valid_ratio;
-  report["raster"]["dem_idw"]["valid_ratio"] = summarizeContinuousRaster(artifacts.dem_idw).valid_ratio;
-  report["raster"]["dem_mask"]["active_ratio"] = summarizeMaskRaster(artifacts.dem_mask).active_ratio;
-  report["raster"]["dem_support_mask"]["active_ratio"] = summarizeMaskRaster(artifacts.dem_support_mask).active_ratio;
-  report["raster"]["dem_edge_mask"]["active_ratio"] = summarizeMaskRaster(artifacts.dem_edge_mask).active_ratio;
-  report["raster"]["dtm_analysis"]["valid_ratio"] = summarizeContinuousRaster(artifacts.dtm_analysis).valid_ratio;
-  report["raster"]["dtm_display"]["valid_ratio"] = summarizeContinuousRaster(artifacts.dtm_display).valid_ratio;
-  report["raster"]["dtm_object_mask"]["active_ratio"] = summarizeMaskRaster(artifacts.dtm_object_mask).active_ratio;
+  report["surface"]["dem_raw"]["valid_ratio"] = summarizeContinuousRaster(artifacts.dem_raw).valid_ratio;
+  report["surface"]["dem"]["valid_ratio"] = summarizeContinuousRaster(artifacts.dem).valid_ratio;
+  report["mask"]["dem_domain_mask"]["active_ratio"] = summarizeMaskRaster(artifacts.dem_domain_mask).active_ratio;
+  report["mask"]["dem_boundary_mask"]["active_ratio"] = summarizeMaskRaster(artifacts.dem_boundary_mask).active_ratio;
+  report["mask"]["dem_object_mask"]["active_ratio"] = summarizeMaskRaster(artifacts.dem_object_mask).active_ratio;
+  report["pointcloud"]["filtered_points"] = artifacts.filtered_points.points.size();
   report["pointcloud"]["ground_points"] = artifacts.ground_points.points.size();
-  report["pointcloud"]["nonground_points"] = artifacts.nonground_points.points.size();
   report["stats"]["counts"] = stats.counts;
   report["stats"]["values"] = stats.values;
   report["stats"]["durations_seconds"] = stats.durations_seconds;
   std::ofstream report_stream(log_dir / "report.json");
   report_stream << std::setw(2) << report << '\n';
 
-  logger.info("Output files written to " + config.output.directory.string());
+  logger.info("Output files written to " + pathToUtf8String(config.output.directory));
 }
 
 void OutputManager::writeStats(const ProcessingArtifacts& artifacts,
@@ -164,7 +154,7 @@ void OutputManager::writeStats(const ProcessingArtifacts& artifacts,
                                const std::filesystem::path& path) const {
   std::ofstream stream(path);
   if (!stream) {
-    throw std::runtime_error("Unable to open stats file: " + path.string());
+    throw std::runtime_error("Unable to open stats file: " + pathToUtf8String(path));
   }
 
   stream << "tile_mode_used=" << (stats.tile_mode_used ? 1 : 0) << "\n\n";
@@ -216,30 +206,21 @@ void OutputManager::writeStats(const ProcessingArtifacts& artifacts,
     stream << "\n";
   }
 
-  writeContinuousRasterSection(stream, "dem_raw_direct", artifacts.dem_raw_direct);
-  writeContinuousRasterSection(stream, "dem_ground_direct", artifacts.dem_ground_direct);
-  writeContinuousRasterSection(stream, "dem_nearest", artifacts.dem_nearest);
-  writeContinuousRasterSection(stream, "dem_idw", artifacts.dem_idw);
-  writeContinuousRasterSection(stream, "dem_nearest_filled", artifacts.dem_nearest_filled);
-  writeContinuousRasterSection(stream, "dem_idw_filled", artifacts.dem_idw_filled);
-  writeContinuousRasterSection(stream, "dtm_analysis", artifacts.dtm_analysis);
-  writeContinuousRasterSection(stream, "dtm_display", artifacts.dtm_display);
-  writeMaskSection(stream, "dem_support_mask", artifacts.dem_support_mask);
-  writeMaskSection(stream, "dem_mask", artifacts.dem_mask);
-  writeMaskSection(stream, "dem_edge_mask", artifacts.dem_edge_mask);
-  writeMaskSection(stream, "dtm_object_mask", artifacts.dtm_object_mask);
+  writeContinuousRasterSection(stream, "dem_raw", artifacts.dem_raw);
+  writeContinuousRasterSection(stream, "dem", artifacts.dem);
+  writeMaskSection(stream, "dem_domain_mask", artifacts.dem_domain_mask);
+  writeMaskSection(stream, "dem_boundary_mask", artifacts.dem_boundary_mask);
+  writeMaskSection(stream, "dem_object_mask", artifacts.dem_object_mask);
 
   stream << "[pointclouds]\n";
   stream << "filtered_points=" << artifacts.filtered_points.points.size() << "\n";
-  stream << "seed_points=" << artifacts.seed_points.points.size() << "\n";
   stream << "ground_points=" << artifacts.ground_points.points.size() << "\n";
-  stream << "nonground_points=" << artifacts.nonground_points.points.size() << "\n";
 }
 
 void OutputManager::writePointCloudPly(const PointCloud& cloud, const std::filesystem::path& path) const {
   std::ofstream stream(path);
   if (!stream) {
-    throw std::runtime_error("Unable to open PLY output: " + path.string());
+    throw std::runtime_error("Unable to open PLY output: " + pathToUtf8String(path));
   }
 
   stream << "ply\n";
@@ -275,33 +256,31 @@ void OutputManager::writeGeoTiff(const RasterGrid& grid,
   {
     std::ofstream bin_stream(bin_path, std::ios::binary);
     if (!bin_stream) {
-      throw std::runtime_error("Unable to open raster bin output: " + bin_path.string());
+      throw std::runtime_error("Unable to open raster bin output: " + pathToUtf8String(bin_path));
     }
     bin_stream.write(reinterpret_cast<const char*>(grid.values.data()),
                      static_cast<std::streamsize>(grid.values.size() * sizeof(double)));
   }
 
   std::string png_mode = "dem";
-  if (stem.find("edge_mask") != std::string::npos) {
+  if (stem.find("boundary_mask") != std::string::npos) {
     png_mode = "edge";
   } else if (stem.find("object_mask") != std::string::npos) {
     png_mode = "object_mask";
-  } else if (stem.find("support_mask") != std::string::npos) {
-    png_mode = "support_mask";
-  } else if (stem == "dem_mask") {
+  } else if (stem == "dem_domain_mask") {
     png_mode = "mask";
   }
 
   nlohmann::json meta;
-  meta["bin_path"] = bin_path.generic_string();
+  meta["bin_path"] = pathToGenericUtf8String(bin_path);
   meta["rows"] = grid.rows;
   meta["cols"] = grid.cols;
   meta["nodata"] = grid.nodata;
   meta["origin_x"] = grid.origin_x;
   meta["origin_y"] = grid.origin_y;
   meta["cell_size"] = grid.cell_size;
-  meta["output_path"] = path.generic_string();
-  meta["png_path"] = png_path.generic_string();
+  meta["output_path"] = pathToGenericUtf8String(path);
+  meta["png_path"] = pathToGenericUtf8String(png_path);
   meta["png_mode"] = png_mode;
   if (!crs.resolved_wkt.empty()) {
     meta["crs_wkt"] = crs.resolved_wkt;
@@ -311,7 +290,7 @@ void OutputManager::writeGeoTiff(const RasterGrid& grid,
   {
     std::ofstream meta_stream(meta_path);
     if (!meta_stream) {
-      throw std::runtime_error("Unable to open GeoTIFF meta output: " + meta_path.string());
+      throw std::runtime_error("Unable to open GeoTIFF meta output: " + pathToUtf8String(meta_path));
     }
     meta_stream << meta.dump(2);
   }
@@ -320,20 +299,20 @@ void OutputManager::writeGeoTiff(const RasterGrid& grid,
   const std::filesystem::path python_path = DEM_PYTHON_EXECUTABLE;
 #ifdef _WIN32
   const std::string command = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& '" +
-                              python_path.generic_string() + "' '" + script_path.generic_string() + "' --meta '" +
-                              meta_path.generic_string() + "'\"";
+                              pathToGenericUtf8String(python_path) + "' '" + pathToGenericUtf8String(script_path) +
+                              "' --meta '" + pathToGenericUtf8String(meta_path) + "'\"";
 #else
   const std::string command =
       quoteForShell(python_path) + " " + quoteForShell(script_path) + " --meta " + quoteForShell(meta_path);
 #endif
   if (std::system(command.c_str()) != 0) {
-    throw std::runtime_error("GeoTIFF writer script failed for: " + path.string());
+    throw std::runtime_error("GeoTIFF writer script failed for: " + pathToUtf8String(path));
   }
 
   std::error_code ec;
   std::filesystem::remove(bin_path, ec);
   std::filesystem::remove(meta_path, ec);
-  logger.info("Wrote GeoTIFF " + path.string());
+  logger.info("Wrote GeoTIFF " + pathToUtf8String(path));
 }
 
 }  // namespace dem

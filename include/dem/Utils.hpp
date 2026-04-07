@@ -62,6 +62,20 @@ class ScopedTimer {
 [[nodiscard]] std::string formatSeconds(double seconds);
 
 /**
+ * @brief 将路径转换为 UTF-8 字符串（保留本地分隔符）
+ * @param path 输入路径
+ * @return UTF-8 编码字符串
+ */
+[[nodiscard]] std::string pathToUtf8String(const std::filesystem::path& path);
+
+/**
+ * @brief 将路径转换为 UTF-8 字符串（统一使用 '/' 分隔符）
+ * @param path 输入路径
+ * @return 适合 JSON/脚本参数的可移植 UTF-8 路径字符串
+ */
+[[nodiscard]] std::string pathToGenericUtf8String(const std::filesystem::path& path);
+
+/**
  * @brief 估算指定数量点云占用的内存字节数
  * @param point_count 点的数量
  * @return 估算的字节数（含额外开销）

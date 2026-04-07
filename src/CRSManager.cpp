@@ -38,7 +38,7 @@ CRSDefinition CRSManager::resolve(const CRSDefinition& config_crs, Logger& logge
   else if (!resolved.crs_wkt_file.empty()) {
     std::ifstream stream(resolved.crs_wkt_file);
     if (!stream) {
-      throw std::runtime_error("Unable to open CRS WKT file: " + resolved.crs_wkt_file.string());
+      throw std::runtime_error("Unable to open CRS WKT file: " + pathToUtf8String(resolved.crs_wkt_file));
     }
     std::ostringstream buffer;
     buffer << stream.rdbuf();

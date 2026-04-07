@@ -10,8 +10,62 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <string_view>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace dem {
+namespace {
+
+#ifdef _WIN32
+std::wstring utf8ToWide(const std::string& value) {
+  const int wide_size = ::MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
+  if (wide_size <= 0) {
+    return {};
+  }
+
+  std::wstring wide_value(static_cast<std::size_t>(wide_size), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, wide_value.data(), wide_size);
+  if (!wide_value.empty() && wide_value.back() == L'\0') {
+    wide_value.pop_back();
+  }
+  return wide_value;
+}
+
+void writeWideAsAnsi(std::wstring_view value) {
+  const int ansi_size = ::WideCharToMultiByte(CP_ACP, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+  if (ansi_size <= 0) {
+    return;
+  }
+  std::string ansi_value(static_cast<std::size_t>(ansi_size), '\0');
+  ::WideCharToMultiByte(
+      CP_ACP, 0, value.data(), static_cast<int>(value.size()), ansi_value.data(), ansi_size, nullptr, nullptr);
+  std::cout << ansi_value << '\n';
+}
+
+void writeUtf8LineToConsole(const std::string& line) {
+  HANDLE handle = ::GetStdHandle(STD_OUTPUT_HANDLE);
+  DWORD mode = 0;
+  const auto wide_line = utf8ToWide(line);
+  if (wide_line.empty()) {
+    std::cout << line << '\n';
+    return;
+  }
+
+  if (handle == INVALID_HANDLE_VALUE || !::GetConsoleMode(handle, &mode)) {
+    writeWideAsAnsi(wide_line);
+    return;
+  }
+
+  DWORD written = 0;
+  ::WriteConsoleW(handle, wide_line.c_str(), static_cast<DWORD>(wide_line.size()), &written, nullptr);
+  ::WriteConsoleW(handle, L"\n", 1, &written, nullptr);
+}
+#endif
+
+}  // namespace
 
 /**
  * @brief 打开日志输出文件
@@ -67,7 +121,11 @@ void Logger::write(Level level, const std::string& message) {
 
   /* 加锁后同时输出到控制台和文件 */
   std::scoped_lock lock(mutex_);
+#ifdef _WIN32
+  writeUtf8LineToConsole(line.str());
+#else
   std::cout << line.str() << '\n';
+#endif
   if (stream_.is_open()) {
     stream_ << line.str() << '\n';
     stream_.flush();   /* 实时刷新确保日志不丢失 */

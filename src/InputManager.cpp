@@ -67,7 +67,7 @@ bool shouldWarnCoordinateOrder(const PointCloudScanSummary& summary) {
 PlyHeader InputManager::inspectHeader(const std::filesystem::path& file_path) const {
   std::ifstream stream(file_path);
   if (!stream) {
-    throw std::runtime_error("Unable to open PLY file: " + file_path.string());
+    throw std::runtime_error("Unable to open PLY file: " + pathToUtf8String(file_path));
   }
   return parseHeader(stream);
 }
@@ -124,7 +124,7 @@ InputValidationReport InputManager::validateInput(const std::filesystem::path& f
     report.warnings.push_back("Sampled input contains duplicate points; duplicates will be removed during preprocessing.");
   }
   if (!report.output_directory_writable) {
-    throw std::runtime_error("Output directory is not writable: " + output_directory.string());
+    throw std::runtime_error("Output directory is not writable: " + pathToUtf8String(output_directory));
   }
 
   /* 记录扫描结果到统计信息 */
@@ -157,7 +157,7 @@ PointCloud InputManager::readPointCloud(const std::filesystem::path& file_path,
   ScopedTimer timer(stats, "input_read_seconds");
   std::ifstream stream(file_path);
   if (!stream) {
-    throw std::runtime_error("Unable to open PLY file: " + file_path.string());
+    throw std::runtime_error("Unable to open PLY file: " + pathToUtf8String(file_path));
   }
 
   const auto header = parseHeader(stream);
@@ -184,7 +184,7 @@ PointCloud InputManager::readPointCloud(const std::filesystem::path& file_path,
   cloud.stored_point_count = cloud.points.size();
   stats.setCount("raw_point_count", cloud.raw_point_count);
   stats.setCount("loaded_point_count", cloud.points.size());
-  logger.info("Loaded " + std::to_string(cloud.points.size()) + " points from " + file_path.string());
+  logger.info("Loaded " + std::to_string(cloud.points.size()) + " points from " + pathToUtf8String(file_path));
   return cloud;
 }
 
@@ -207,7 +207,7 @@ PointCloudScanSummary InputManager::scanPointCloud(const std::filesystem::path& 
 
   std::ifstream stream(file_path);
   if (!stream) {
-    throw std::runtime_error("Unable to open PLY file: " + file_path.string());
+    throw std::runtime_error("Unable to open PLY file: " + pathToUtf8String(file_path));
   }
 
   const auto header = parseHeader(stream);
@@ -250,7 +250,7 @@ void InputManager::streamPoints(const std::filesystem::path& file_path,
                                 const std::function<void(const Point3D&)>& callback) const {
   std::ifstream stream(file_path);
   if (!stream) {
-    throw std::runtime_error("Unable to open PLY file: " + file_path.string());
+    throw std::runtime_error("Unable to open PLY file: " + pathToUtf8String(file_path));
   }
 
   const auto header = parseHeader(stream);

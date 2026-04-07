@@ -16,8 +16,25 @@
 #include <numbers>
 #include <sstream>
 #include <stdexcept>
+#include <type_traits>
 
 namespace dem {
+namespace {
+
+template <typename StringT>
+std::string utf8BytesFromPathString(const StringT& value) {
+#if defined(__cpp_char8_t)
+  if constexpr (std::is_same_v<typename StringT::value_type, char8_t>) {
+    return std::string(reinterpret_cast<const char*>(value.data()), value.size());
+  } else {
+    return std::string(value.begin(), value.end());
+  }
+#else
+  return std::string(value.begin(), value.end());
+#endif
+}
+
+}  // namespace
 
 void Bounds::expand(double x, double y, double z) noexcept {
   xmin = std::min(xmin, x);
@@ -116,6 +133,14 @@ std::string formatSeconds(double seconds) {
   std::ostringstream stream;
   stream << std::fixed << std::setprecision(3) << seconds << "s";
   return stream.str();
+}
+
+std::string pathToUtf8String(const std::filesystem::path& path) {
+  return utf8BytesFromPathString(path.u8string());
+}
+
+std::string pathToGenericUtf8String(const std::filesystem::path& path) {
+  return utf8BytesFromPathString(path.generic_u8string());
 }
 
 std::size_t estimatePointMemoryBytes(std::size_t point_count) {
@@ -258,7 +283,7 @@ void ensureDirectory(const std::filesystem::path& dir) {
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
   if (ec) {
-    throw std::runtime_error("Unable to create directory: " + dir.string());
+    throw std::runtime_error("Unable to create directory: " + pathToUtf8String(dir));
   }
 }
 

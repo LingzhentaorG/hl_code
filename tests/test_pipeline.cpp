@@ -1,15 +1,16 @@
 #include "dem/DEMEngine.hpp"
-#include "dem/GroundFilterEngine.hpp"
 #include "dem/InputManager.hpp"
 #include "dem/MainController.hpp"
 #include "dem/SpatialIndexManager.hpp"
-#include "dem/Utils.hpp"
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
-#include <tuple>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -17,16 +18,13 @@ dem::DEMConfig makeTestConfig() {
   dem::DEMConfig config;
   config.crs.allow_unknown_crs = true;
   config.dem.cell_size = 1.0;
-  config.dem.nearest_max_distance = 0.6;
-  config.dem.idw_radius = 1.5;
+  config.dem.idw_k = 8;
   config.dem.idw_min_points = 3;
-  config.dem.idw_max_points = 8;
+  config.dem.idw_max_distance = 0.0;
+  config.dem.idw_allow_fallback = true;
   config.dem.idw_power = 2.0;
   config.dem.nodata = -9999.0;
-  config.dem.edge_shrink_cells = 1.0;
-  config.dem.fill_holes = true;
-  config.dem.fill_max_radius = 1;
-  config.dem.fill_min_neighbors = 4;
+  config.dem.boundary_outline_cells = 1.0;
   config.ground.seed_grid_size = 1.0;
   config.ground.search_radius = 1.5;
   config.ground.knn = 8;
@@ -54,7 +52,7 @@ dem::RasterGrid makeDirectRaster(const dem::Bounds& bounds,
                                  const dem::PointCloud& cloud,
                                  const dem::DEMConfig& config,
                                  dem::DEMEngine& engine) {
-  const auto grid = engine.createGrid(bounds, config, false);
+  const auto grid = engine.createGrid(bounds, config);
   return engine.rasterizeMinimum(cloud, grid);
 }
 
@@ -68,14 +66,12 @@ std::size_t validValueCount(const dem::RasterGrid& grid) {
   });
 }
 
-std::size_t changedValueCount(const dem::RasterGrid& before, const dem::RasterGrid& after) {
-  std::size_t changed = 0;
-  for (std::size_t i = 0; i < before.values.size() && i < after.values.size(); ++i) {
-    if (before.values[i] != after.values[i]) {
-      ++changed;
-    }
-  }
-  return changed;
+dem::RasterGrid makeFullMaskLike(const dem::RasterGrid& grid) {
+  dem::RasterGrid mask = grid;
+  std::fill(mask.values.begin(), mask.values.end(), 1.0);
+  mask.nodata = 0.0;
+  mask.valid_mask.assign(mask.values.size(), true);
+  return mask;
 }
 
 }  // namespace
@@ -110,7 +106,7 @@ TEST_CASE("spatial index returns expected nearest neighbor") {
   CHECK(result.indices.front() == 0);
 }
 
-TEST_CASE("controller runs end-to-end on benchmark sample") {
+TEST_CASE("controller writes only official DEM outputs by default") {
   const auto source_dir = std::filesystem::path(DEM_SOURCE_DIR);
   const auto sample_path = source_dir / "data" / "基准.ply";
   REQUIRE(std::filesystem::exists(sample_path));
@@ -121,20 +117,25 @@ TEST_CASE("controller runs end-to-end on benchmark sample") {
 
   const auto config_path = temp_root / "pipeline_config.json";
   std::ofstream out(config_path);
-  const auto sample_path_json = sample_path.generic_string();
-  const auto output_dir_json = (temp_root / "out").generic_string();
   out << "{\n"
-         "  \"input\": { \"file_path\": \"" << sample_path_json << "\" },\n"
+         "  \"input\": { \"file_path\": \"" << sample_path.generic_string() << "\" },\n"
          "  \"crs\": { \"epsg_code\": 4326 },\n"
          "  \"dem\": {\n"
          "    \"cell_size\": 8.0,\n"
+         "    \"idw_k\": 12,\n"
+         "    \"idw_min_points\": 3,\n"
+         "    \"idw_max_distance\": 0.0,\n"
+         "    \"idw_allow_fallback\": true,\n"
          "    \"idw_power\": 2.0,\n"
-         "    \"fill_holes\": true,\n"
-         "    \"fill_max_radius\": 2,\n"
-         "    \"fill_min_neighbors\": 4\n"
+         "    \"boundary_outline_cells\": 1.0\n"
          "  },\n"
          "  \"tile\": { \"mode\": \"disabled\", \"tile_size_cells\": 1000, \"memory_limit_mb\": 512 },\n"
-         "  \"output\": { \"directory\": \"" << output_dir_json << "\", \"write_png\": true, \"timestamp_subdir\": true }\n"
+         "  \"output\": {\n"
+      << "    \"directory\": \"" << (temp_root / "out").generic_string() << "\",\n"
+         "    \"write_png\": true,\n"
+         "    \"timestamp_subdir\": true,\n"
+         "    \"write_debug_pointclouds\": false\n"
+         "  }\n"
          "}\n";
   out.close();
 
@@ -149,23 +150,32 @@ TEST_CASE("controller runs end-to-end on benchmark sample") {
     }
   }
   REQUIRE_FALSE(run_dir.empty());
-  CHECK(std::filesystem::exists(run_dir / "dem" / "dem_idw.tif"));
-  CHECK(std::filesystem::exists(run_dir / "dem" / "dem_idw.png"));
-  CHECK(std::filesystem::exists(run_dir / "dem" / "dem_raw_direct.png"));
-  CHECK(std::filesystem::exists(run_dir / "dem" / "dem_ground_direct.png"));
-  CHECK(std::filesystem::exists(run_dir / "dem" / "dem_support_mask.png"));
-  CHECK(std::filesystem::exists(run_dir / "dem" / "dem_mask.png"));
-  CHECK(std::filesystem::exists(run_dir / "dem" / "dem_edge_mask.png"));
-  CHECK(std::filesystem::exists(run_dir / "dem" / "dtm_analysis.tif"));
-  CHECK(std::filesystem::exists(run_dir / "dem" / "dtm_analysis.png"));
-  CHECK(std::filesystem::exists(run_dir / "dem" / "dtm_display.png"));
-  CHECK(std::filesystem::exists(run_dir / "dem" / "dtm_object_mask.png"));
-  CHECK(std::filesystem::exists(run_dir / "pointcloud" / "ground_points.ply"));
-  CHECK(std::filesystem::exists(run_dir / "pointcloud" / "seed_points.ply"));
+
+  CHECK(std::filesystem::exists(run_dir / "surface" / "dem.tif"));
+  CHECK(std::filesystem::exists(run_dir / "surface" / "dem.png"));
+  CHECK(std::filesystem::exists(run_dir / "surface" / "dem_raw.tif"));
+  CHECK(std::filesystem::exists(run_dir / "surface" / "dem_raw.png"));
+  CHECK(std::filesystem::exists(run_dir / "mask" / "dem_domain_mask.tif"));
+  CHECK(std::filesystem::exists(run_dir / "mask" / "dem_domain_mask.png"));
+  CHECK(std::filesystem::exists(run_dir / "mask" / "dem_boundary_mask.tif"));
+  CHECK(std::filesystem::exists(run_dir / "mask" / "dem_boundary_mask.png"));
+  CHECK(std::filesystem::exists(run_dir / "mask" / "dem_object_mask.tif"));
+  CHECK(std::filesystem::exists(run_dir / "mask" / "dem_object_mask.png"));
+  CHECK(std::filesystem::exists(run_dir / "log" / "config_used.json"));
   CHECK(std::filesystem::exists(run_dir / "log" / "stats.txt"));
+  CHECK(std::filesystem::exists(run_dir / "log" / "report.json"));
+
+  CHECK_FALSE(std::filesystem::exists(run_dir / "pointcloud"));
+  CHECK_FALSE(std::filesystem::exists(run_dir / "dem"));
+  CHECK_FALSE(std::filesystem::exists(run_dir / "surface" / "dtm_analysis.tif"));
+  CHECK_FALSE(std::filesystem::exists(run_dir / "surface" / "dtm_display.tif"));
+  CHECK_FALSE(std::filesystem::exists(run_dir / "surface" / "dem_idw.tif"));
+  CHECK_FALSE(std::filesystem::exists(run_dir / "mask" / "dem_mask.png"));
+  CHECK_FALSE(std::filesystem::exists(run_dir / "mask" / "dem_edge_mask.png"));
+  CHECK_FALSE(std::filesystem::exists(run_dir / "mask" / "dtm_object_mask.png"));
 }
 
-TEST_CASE("batch processing script produces summary and dataset outputs") {
+TEST_CASE("batch processing script writes datasets subtree without configs directory") {
   const auto source_dir = std::filesystem::path(DEM_SOURCE_DIR);
   const auto sample_path = source_dir / "data" / "基准.ply";
   REQUIRE(std::filesystem::exists(sample_path));
@@ -180,10 +190,22 @@ TEST_CASE("batch processing script produces summary and dataset outputs") {
   out << "{\n"
          "  \"input\": { \"file_path\": \"" << sample_path.generic_string() << "\" },\n"
          "  \"crs\": { \"epsg_code\": 4326 },\n"
-         "  \"dem\": { \"cell_size\": 8.0, \"idw_power\": 2.0 },\n"
+         "  \"dem\": {\n"
+         "    \"cell_size\": 8.0,\n"
+         "    \"idw_k\": 12,\n"
+         "    \"idw_min_points\": 3,\n"
+         "    \"idw_max_distance\": 0.0,\n"
+         "    \"idw_allow_fallback\": true,\n"
+         "    \"idw_power\": 2.0,\n"
+         "    \"boundary_outline_cells\": 1.0\n"
+         "  },\n"
          "  \"tile\": { \"mode\": \"disabled\", \"tile_size_cells\": 1000, \"memory_limit_mb\": 512 },\n"
-         "  \"output\": { \"directory\": \"" << (temp_root / "out").generic_string()
-      << "\", \"write_png\": true, \"timestamp_subdir\": false }\n"
+         "  \"output\": {\n"
+      << "    \"directory\": \"" << (temp_root / "out").generic_string() << "\",\n"
+         "    \"write_png\": true,\n"
+         "    \"timestamp_subdir\": false,\n"
+         "    \"write_debug_pointclouds\": false\n"
+         "  }\n"
          "}\n";
   out.close();
 
@@ -213,18 +235,20 @@ TEST_CASE("batch processing script produces summary and dataset outputs") {
   REQUIRE_FALSE(batch_root.empty());
   CHECK(std::filesystem::exists(batch_root / "summary.csv"));
   CHECK(std::filesystem::exists(batch_root / "summary.json"));
-  CHECK(std::filesystem::exists(batch_root / "基准" / "dem" / "dem_raw_direct.png"));
-  CHECK(std::filesystem::exists(batch_root / "基准" / "dem" / "dem_idw.png"));
-  CHECK(std::filesystem::exists(batch_root / "基准" / "dem" / "dtm_analysis.png"));
-  CHECK(std::filesystem::exists(batch_root / "基准" / "dem" / "dtm_object_mask.png"));
+  CHECK(std::filesystem::exists(batch_root / "datasets" / "基准" / "surface" / "dem.png"));
+  CHECK(std::filesystem::exists(batch_root / "datasets" / "基准" / "surface" / "dem_raw.png"));
+  CHECK(std::filesystem::exists(batch_root / "datasets" / "基准" / "mask" / "dem_domain_mask.png"));
+  CHECK(std::filesystem::exists(batch_root / "datasets" / "基准" / "mask" / "dem_boundary_mask.png"));
+  CHECK(std::filesystem::exists(batch_root / "datasets" / "基准" / "mask" / "dem_object_mask.png"));
+  CHECK(std::filesystem::exists(batch_root / "datasets" / "基准" / "log" / "stats.txt"));
+  CHECK(std::filesystem::exists(batch_root / "datasets" / "基准" / "log" / "config_used.json"));
+  CHECK_FALSE(std::filesystem::exists(batch_root / "configs"));
+  CHECK_FALSE(std::filesystem::exists(batch_root / "基准"));
+  CHECK_FALSE(std::filesystem::exists(batch_root / "datasets" / "基准" / "dem"));
 }
 
-TEST_CASE("domain mask expands beyond direct support but does not cross large holes") {
+TEST_CASE("domain mask fills convex hull interior without internal holes") {
   auto config = makeTestConfig();
-  config.dem.nearest_max_distance = 1.0;
-  config.dem.idw_radius = 1.5;
-  config.dem.fill_max_radius = 1;
-  config.dem.fill_min_neighbors = 4;
 
   std::vector<dem::Point3D> points;
   for (int row = 0; row < 5; ++row) {
@@ -245,30 +269,28 @@ TEST_CASE("domain mask expands beyond direct support but does not cross large ho
   dem::ProcessStats stats;
   dem::DEMEngine engine;
   const dem::Bounds bounds{0.0, 5.0, 0.0, 5.0, 0.0, 10.0};
-  auto support = makeDirectRaster(bounds, cloud, config, engine);
-  auto support_mask = engine.buildSupportMask(support);
-  auto domain_mask = engine.buildDomainMask(support, config, logger, stats);
-  auto nearest = engine.interpolateNearest(support, domain_mask, config, logger, stats);
-  auto filled = engine.fillHoles(nearest, domain_mask, config, logger, stats);
+  const auto support = makeDirectRaster(bounds, cloud, config, engine);
+  const auto support_mask = engine.buildSupportMask(support);
+  const auto grid_template = engine.createGrid(bounds, config);
+  const auto domain_mask = engine.buildDomainMask(cloud, grid_template, config, logger, stats);
 
-  CHECK(nearest.values[nearest.offset(2, 2)] == doctest::Approx(config.dem.nodata));
-  CHECK(filled.values[filled.offset(2, 2)] == doctest::Approx(config.dem.nodata));
-  CHECK(filled.values[filled.offset(1, 1)] != doctest::Approx(config.dem.nodata));
   CHECK(support_mask.values[support_mask.offset(1, 1)] == doctest::Approx(0.0));
   CHECK(domain_mask.values[domain_mask.offset(1, 1)] == doctest::Approx(1.0));
-  CHECK(domain_mask.values[domain_mask.offset(2, 2)] == doctest::Approx(0.0));
+  CHECK(domain_mask.values[domain_mask.offset(2, 2)] == doctest::Approx(1.0));
+  CHECK(activeCount(domain_mask) == 25U);
   CHECK(activeCount(support_mask) < activeCount(domain_mask));
 }
 
-TEST_CASE("edge mask only marks structural outer boundary when no fill frontier exists") {
+TEST_CASE("boundary mask is a hull outline with configurable thickness") {
   auto config = makeTestConfig();
+
   std::vector<dem::Point3D> points;
-  for (int row = 0; row < 5; ++row) {
-    for (int col = 0; col < 5; ++col) {
+  for (int row = 0; row < 9; ++row) {
+    for (int col = 0; col < 9; ++col) {
       dem::Point3D point;
       point.x = col + 0.5;
-      point.y = 4.5 - row;
-      point.z = 0.0;
+      point.y = 8.5 - row;
+      point.z = static_cast<double>(row + col);
       points.push_back(point);
     }
   }
@@ -277,167 +299,130 @@ TEST_CASE("edge mask only marks structural outer boundary when no fill frontier 
   dem::Logger logger;
   dem::ProcessStats stats;
   dem::DEMEngine engine;
-  const dem::Bounds bounds{0.0, 5.0, 0.0, 5.0, 0.0, 1.0};
-  auto support = makeDirectRaster(bounds, cloud, config, engine);
-  auto domain = engine.buildDomainMask(support, config, logger, stats);
-  auto nearest = engine.interpolateNearest(support, domain, config, logger, stats);
-  auto edge = engine.buildEdgeMask(domain, nearest, nearest, nearest, nearest, config, logger, stats);
+  const dem::Bounds bounds{0.0, 9.0, 0.0, 9.0, 0.0, 20.0};
+  const auto grid_template = engine.createGrid(bounds, config);
 
-  CHECK(activeCount(edge) == 16);
-  CHECK(edge.values[edge.offset(2, 2)] == doctest::Approx(0.0));
-  CHECK(edge.values[edge.offset(0, 0)] == doctest::Approx(1.0));
+  config.dem.boundary_outline_cells = 1.0;
+  const auto outline1 = engine.buildEdgeMask(cloud, grid_template, config, logger, stats);
+
+  config.dem.boundary_outline_cells = 2.0;
+  const auto outline2 = engine.buildEdgeMask(cloud, grid_template, config, logger, stats);
+
+  CHECK(outline1.values[outline1.offset(4, 4)] == doctest::Approx(0.0));
+  CHECK(outline2.values[outline2.offset(4, 4)] == doctest::Approx(0.0));
+  CHECK(activeCount(outline2) > activeCount(outline1));
 }
 
-TEST_CASE("idw interpolation honors radius and minimum neighbor constraints") {
+TEST_CASE("official IDW uses output diagonal when max distance is zero") {
   auto config = makeTestConfig();
-  config.dem.idw_radius = 0.75;
-  config.dem.idw_min_points = 2;
+  config.dem.idw_k = 4;
+  config.dem.idw_min_points = 3;
+  config.dem.idw_max_distance = 0.0;
+  config.dem.idw_allow_fallback = true;
 
-  std::vector<dem::Point3D> points;
-  for (const auto [x, y, z] : std::vector<std::tuple<double, double, double>>{
-           {0.5, 2.5, 10.0},
-           {2.5, 2.5, 20.0},
-       }) {
+  std::vector<dem::Point3D> support_points;
+  for (const auto& xy : std::vector<std::pair<double, double>>{{0.5, 0.5}, {4.5, 0.5}, {0.5, 4.5}, {4.5, 4.5}}) {
     dem::Point3D point;
-    point.x = x;
-    point.y = y;
-    point.z = z;
-    points.push_back(point);
+    point.x = xy.first;
+    point.y = xy.second;
+    point.z = 10.0 + xy.first + xy.second;
+    point.ground = true;
+    support_points.push_back(point);
   }
 
-  auto cloud = makeCloud(points);
+  auto cloud = makeCloud(support_points);
   dem::Logger logger;
   dem::ProcessStats stats;
   dem::DEMEngine engine;
-  const dem::Bounds bounds{0.0, 3.0, 0.0, 3.0, 0.0, 20.0};
-  auto support = makeDirectRaster(bounds, cloud, config, engine);
-  auto domain = engine.buildSupportMask(support);
-  domain.values[domain.offset(0, 1)] = 1.0;
-  domain.values[domain.offset(1, 1)] = 1.0;
-  auto idw = engine.interpolateIdw(support, domain, config, logger, stats);
+  const dem::Bounds bounds{0.0, 5.0, 0.0, 5.0, 0.0, 20.0};
+  const auto support = makeDirectRaster(bounds, cloud, config, engine);
+  const auto grid_template = engine.createGrid(bounds, config);
+  const auto domain = engine.buildDomainMask(cloud, grid_template, config, logger, stats);
+  const auto dem = engine.interpolateIdw(support, domain, config, logger, stats);
 
-  CHECK(idw.values[idw.offset(1, 1)] == doctest::Approx(config.dem.nodata));
-  CHECK(idw.values[idw.offset(0, 0)] == doctest::Approx(10.0));
-  CHECK(idw.values[idw.offset(0, 1)] == doctest::Approx(config.dem.nodata));
+  CHECK(validValueCount(dem) == 25U);
+  CHECK(dem.values[dem.offset(2, 2)] != doctest::Approx(dem.nodata));
 }
 
-TEST_CASE("ground filter keeps roof points out of ground direct raster") {
+TEST_CASE("official IDW fallback controls whether sparse holes are interpolated") {
   auto config = makeTestConfig();
-  config.ground.max_height_diff = 0.5;
+  config.dem.idw_k = 2;
+  config.dem.idw_min_points = 3;
+  config.dem.idw_max_distance = 0.0;
 
-  std::vector<dem::Point3D> points;
+  std::vector<dem::Point3D> support_points;
+  for (const auto& xy : std::vector<std::pair<double, double>>{{0.5, 0.5}, {4.5, 4.5}}) {
+    dem::Point3D point;
+    point.x = xy.first;
+    point.y = xy.second;
+    point.z = 10.0 + xy.first + xy.second;
+    point.ground = true;
+    support_points.push_back(point);
+  }
+
+  auto cloud = makeCloud(support_points);
+  dem::Logger logger;
+  dem::ProcessStats stats;
+  dem::DEMEngine engine;
+  const dem::Bounds bounds{0.0, 5.0, 0.0, 5.0, 0.0, 20.0};
+  const auto support = makeDirectRaster(bounds, cloud, config, engine);
+  auto domain = makeFullMaskLike(support);
+
+  config.dem.idw_allow_fallback = false;
+  const auto no_fallback = engine.interpolateIdw(support, domain, config, logger, stats);
+  CHECK(no_fallback.values[no_fallback.offset(2, 2)] == doctest::Approx(no_fallback.nodata));
+
+  config.dem.idw_allow_fallback = true;
+  const auto with_fallback = engine.interpolateIdw(support, domain, config, logger, stats);
+  CHECK(with_fallback.values[with_fallback.offset(2, 2)] != doctest::Approx(with_fallback.nodata));
+}
+
+TEST_CASE("object mask does not punch holes in the official domain or DEM") {
+  auto config = makeTestConfig();
+
+  std::vector<dem::Point3D> boundary_points;
   for (int row = 0; row < 5; ++row) {
     for (int col = 0; col < 5; ++col) {
       dem::Point3D point;
       point.x = col + 0.5;
       point.y = 4.5 - row;
-      point.z = (row >= 1 && row <= 2 && col >= 1 && col <= 2) ? 3.0 : 0.0;
-      points.push_back(point);
+      point.z = static_cast<double>(row + col);
+      point.ground = true;
+      boundary_points.push_back(point);
     }
   }
 
-  auto filtered = makeCloud(points);
-  dem::PointCloud seeds;
-  dem::PointCloud ground;
-  dem::PointCloud nonground;
+  auto boundary_cloud = makeCloud(boundary_points);
   dem::Logger logger;
   dem::ProcessStats stats;
-  dem::GroundFilterEngine engine;
-  dem::DEMEngine dem_engine;
+  dem::DEMEngine engine;
+  const dem::Bounds bounds{0.0, 5.0, 0.0, 5.0, 0.0, 10.0};
+  const auto grid_template = engine.createGrid(bounds, config);
+  const auto domain = engine.buildDomainMask(boundary_cloud, grid_template, config, logger, stats);
 
-  engine.extractGround(filtered, seeds, ground, nonground, config, logger, stats);
-  const dem::Bounds bounds{0.0, 5.0, 0.0, 5.0, 0.0, 3.0};
-  auto raw_direct = makeDirectRaster(bounds, makeCloud(points), config, dem_engine);
-  auto ground_direct = makeDirectRaster(bounds, ground, config, dem_engine);
+  dem::RasterGrid object_mask = grid_template;
+  object_mask.nodata = 0.0;
+  std::fill(object_mask.values.begin(), object_mask.values.end(), 0.0);
+  object_mask.valid_mask.assign(object_mask.values.size(), true);
+  object_mask.values[object_mask.offset(2, 2)] = 1.0;
 
-  CHECK(std::none_of(ground.points.begin(), ground.points.end(), [](const dem::Point3D& point) { return point.z > 1.0; }));
-  CHECK(std::any_of(nonground.points.begin(), nonground.points.end(), [](const dem::Point3D& point) { return point.z > 1.0; }));
-  CHECK(raw_direct.values[raw_direct.offset(1, 1)] == doctest::Approx(3.0));
-  CHECK(ground_direct.values[ground_direct.offset(1, 1)] == doctest::Approx(config.dem.nodata));
-}
-
-TEST_CASE("object mask excludes roof block from final bare-earth domain and display dtm remains valid") {
-  auto config = makeTestConfig();
-  config.dem.idw_radius = 2.5;
-  config.dem.nearest_max_distance = 2.0;
-
-  std::vector<dem::Point3D> points;
-  for (int row = 0; row < 6; ++row) {
-    for (int col = 0; col < 6; ++col) {
-      dem::Point3D point;
-      point.x = col + 0.5;
-      point.y = 5.5 - row;
-      point.z = (row >= 2 && row <= 3 && col >= 2 && col <= 3) ? 4.0 : 0.0;
-      points.push_back(point);
+  dem::RasterGrid support = grid_template;
+  std::fill(support.values.begin(), support.values.end(), support.nodata);
+  support.valid_mask.assign(support.values.size(), false);
+  for (std::size_t row = 0; row < support.rows; ++row) {
+    for (std::size_t col = 0; col < support.cols; ++col) {
+      if (row == 2 && col == 2) {
+        continue;
+      }
+      const auto offset = support.offset(row, col);
+      support.values[offset] = static_cast<double>(row + col);
+      support.valid_mask[offset] = true;
     }
   }
 
-  auto filtered = makeCloud(points);
-  dem::PointCloud seeds;
-  dem::PointCloud ground;
-  dem::PointCloud nonground;
-  dem::Logger logger;
-  dem::ProcessStats stats;
-  dem::GroundFilterEngine ground_engine;
-  dem::DEMEngine dem_engine;
-
-  ground_engine.extractGround(filtered, seeds, ground, nonground, config, logger, stats);
-  const dem::Bounds bounds{0.0, 6.0, 0.0, 6.0, 0.0, 4.0};
-  auto raw_direct = makeDirectRaster(bounds, makeCloud(points), config, dem_engine);
-  auto ground_direct = makeDirectRaster(bounds, ground, config, dem_engine);
-  auto object_mask = dem_engine.buildObjectMask(raw_direct, ground_direct, config, logger, stats);
-  auto accepted = dem_engine.refineAcceptedSupport(raw_direct, ground_direct, config, logger, stats, &object_mask);
-  auto domain = dem_engine.buildDomainMask(accepted, config, logger, stats, &object_mask);
-  auto analysis = dem_engine.buildAnalysisDtm(accepted, domain, object_mask, config, logger, stats);
-  auto display = dem_engine.buildDisplayDtm(analysis, domain, object_mask, config, logger, stats);
+  const auto dem = engine.interpolateIdw(support, domain, config, logger, stats);
 
   CHECK(object_mask.values[object_mask.offset(2, 2)] == doctest::Approx(1.0));
-  CHECK(domain.values[domain.offset(2, 2)] == doctest::Approx(0.0));
-  CHECK(analysis.values[analysis.offset(2, 2)] == doctest::Approx(config.dem.nodata));
-  CHECK(display.values[display.offset(2, 2)] != doctest::Approx(config.dem.nodata));
-  CHECK(validValueCount(display) > validValueCount(analysis));
-  CHECK(validValueCount(display) > 0U);
-}
-
-TEST_CASE("display dtm fills enclosed holes without expanding border-connected gaps") {
-  auto config = makeTestConfig();
-  dem::Logger logger;
-  dem::ProcessStats stats;
-  dem::DEMEngine engine;
-  const dem::Bounds bounds{0.0, 6.0, 0.0, 6.0, 0.0, 10.0};
-
-  auto analysis = engine.createGrid(bounds, config, false);
-  auto domain = engine.createGrid(bounds, config, false);
-  domain.nodata = -1.0;
-  std::fill(domain.values.begin(), domain.values.end(), 0.0);
-  std::fill(domain.valid_mask.begin(), domain.valid_mask.end(), 1U);
-  auto object_mask = domain;
-
-  for (std::size_t row = 0; row < domain.rows; ++row) {
-    for (std::size_t col = 1; col + 1 < domain.cols; ++col) {
-      domain.values[domain.offset(row, col)] = 1.0;
-    }
-  }
-
-  for (std::size_t row = 0; row < analysis.rows; ++row) {
-    for (std::size_t col = 1; col + 1 < analysis.cols; ++col) {
-      const auto offset = analysis.offset(row, col);
-      analysis.values[offset] = static_cast<double>(row + col);
-      analysis.valid_mask[offset] = 1U;
-    }
-  }
-
-  analysis.values[analysis.offset(2, 2)] = analysis.nodata;
-  analysis.valid_mask[analysis.offset(2, 2)] = 0U;
-  domain.values[domain.offset(2, 2)] = 1.0;
-
-  domain.values[domain.offset(3, 0)] = 0.0;
-  analysis.values[analysis.offset(3, 1)] = analysis.nodata;
-  analysis.valid_mask[analysis.offset(3, 1)] = 0U;
-  domain.values[domain.offset(3, 1)] = 0.0;
-
-  auto display = engine.buildDisplayDtm(analysis, domain, object_mask, config, logger, stats);
-
-  CHECK(display.values[display.offset(2, 2)] != doctest::Approx(config.dem.nodata));
-  CHECK(display.values[display.offset(3, 1)] == doctest::Approx(config.dem.nodata));
+  CHECK(domain.values[domain.offset(2, 2)] == doctest::Approx(1.0));
+  CHECK(dem.values[dem.offset(2, 2)] != doctest::Approx(dem.nodata));
 }

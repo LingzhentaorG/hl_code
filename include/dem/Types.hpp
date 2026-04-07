@@ -293,18 +293,14 @@ struct GroundConfig {
 
 /** DEM 生成配置 */
 struct DemGenerationConfig {
-  double cell_size = 1.0;                       /**< 栅格单元大小 / 分辨率（米） */
-  double nearest_max_distance = 0.0;            /**< 最近邻插值的最大搜索距离（0=自动） */
-  double idw_radius = 0.0;                      /**< IDW 插值的搜索半径（0=自动） */
-  std::size_t idw_max_points = 12;              /**< IDW 插值最大使用点数 */
+  double cell_size = 8.0;                       /**< 栅格单元大小 / 分辨率（米） */
+  std::size_t idw_k = 12;                       /**< IDW 插值使用的 K 近邻数量 */
   std::size_t idw_min_points = 3;               /**< IDW 插值最少需要点数 */
+  double idw_max_distance = 0.0;                /**< ArcGIS 风格 IDW 的最大搜索距离（0=输出范围对角线） */
+  bool idw_allow_fallback = true;               /**< ArcGIS 风格 IDW 邻点不足时是否允许用已有邻点回退 */
   double idw_power = 2.0;                       /**< IDW 距离权重幂指数 */
   double nodata = -9999.0;                      /**< 无数据标记值 */
-  double edge_shrink_cells = 1.0;               /**< 边缘收缩的单元格数 */
-  bool enable_edge_mask = true;                 /**< 是否启用边缘掩码 */
-  bool fill_holes = true;                       /**< 是否填充空洞 */
-  int fill_max_radius = 2;                      /**< 空洞填充最大搜索半径（单元格） */
-  std::size_t fill_min_neighbors = 4;           /**< 空洞填充最少邻居数 */
+  double boundary_outline_cells = 1.0;          /**< 凸包边界轮廓的单元格厚度 */
 };
 
 /** Tile 分块配置 */
@@ -321,6 +317,7 @@ struct OutputConfig {
   bool overwrite = true;                        /**< 是否覆盖已存在的输出目录 */
   bool write_png = true;                        /**< 是否同时生成 PNG 可视化图像 */
   bool timestamp_subdir = true;                 /**< 是否在输出目录下创建时间戳子目录 */
+  bool write_debug_pointclouds = false;         /**< 是否写出调试用点云产物 */
 };
 
 /**
@@ -357,28 +354,19 @@ struct PlaneFitResult {
 /**
  * @brief 处理产物集合结构体
  *
- * 包含 DEM 生成流水线产生的所有中间和最终产物：
- * - 分类后的四类点云（过滤点、种子点、地面点、非地面点）
- * - 多种方法的 DEM 栅格（最近邻、IDW、及其空洞填补版本）
- * - 有效值掩码和边缘掩码
+ * 包含 DEM 生成流水线对外暴露的正式产物：
+ * - 可选的调试点云（过滤点、地面点）
+ * - 唯一官方 DEM 栅格
+ * - 凸包域掩码、边界掩码和对象掩码
  */
 struct ProcessingArtifacts {
-  PointCloud filtered_points;                   /**< 离群点过滤后的点云 */
-  PointCloud seed_points;                      /**< 种子点云 */
-  PointCloud ground_points;                    /**< 最终地面点云 */
-  PointCloud nonground_points;                 /**< 非地面点云 */
-  RasterGrid dem_raw_direct;                   /**< 预处理后直接落格 DEM（无地面滤波/无插值） */
-  RasterGrid dem_ground_direct;                /**< 地面点直接落格 DEM（无插值） */
-  RasterGrid dem_nearest;                      /**< 最近邻插值 DEM */
-  RasterGrid dem_idw;                           /**< IDW 插值 DEM */
-  RasterGrid dem_nearest_filled;               /**< 最近邻插值 DEM（空洞已填充） */
-  RasterGrid dem_idw_filled;                   /**< IDW 插值 DEM（空洞已填充） */
-  RasterGrid dem_support_mask;                  /**< 原始地面直接支持掩码栅格 */
-  RasterGrid dem_mask;                          /**< 最终 DEM 有效域掩码栅格 */
-  RasterGrid dem_edge_mask;                     /**< 边缘掩码栅格 */
-  RasterGrid dtm_analysis;                      /**< 分析型裸地 DTM */ 
-  RasterGrid dtm_display;                       /**< 展示型全域补全 + 平滑 DTM */
-  RasterGrid dtm_object_mask;                   /**< 建筑/树木等高起伏对象掩码 */
+  PointCloud filtered_points;                   /**< 离群点过滤后的点云（仅调试导出使用） */
+  PointCloud ground_points;                     /**< 最终地面点云（仅调试导出使用） */
+  RasterGrid dem_raw;                           /**< 最终插值前的原始支撑栅格 */
+  RasterGrid dem;                               /**< 唯一官方 DEM 栅格 */
+  RasterGrid dem_domain_mask;                   /**< 最终 DEM 插值域掩码（filtered_points 凸包填充域） */
+  RasterGrid dem_boundary_mask;                 /**< filtered_points 凸包边界轮廓掩码 */
+  RasterGrid dem_object_mask;                   /**< 建筑/树木等高起伏对象掩码 */
 };
 
 }  // namespace dem

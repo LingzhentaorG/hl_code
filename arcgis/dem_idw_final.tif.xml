@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata xml:lang="zh"><Esri><CreaDate>20260407</CreaDate><CreaTime>15162300</CreaTime><ArcGISFormat>1.0</ArcGISFormat><SyncOnce>TRUE</SyncOnce><DataProperties><lineage><Process ToolSource="c:\program files (x86)\arcgis\desktop10.8\ArcToolbox\Toolboxes\Spatial Analyst Tools.tbx\ExtractByMask" Date="20260407" Time="151623">ExtractByMask dem_idw.tif dem_raw_mask D:\Desktop\hl_code\arcgis\dem_idw_final.tif</Process></lineage></DataProperties></Esri></metadata>

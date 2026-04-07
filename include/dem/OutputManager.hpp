@@ -9,10 +9,10 @@ namespace dem {
  * @brief 输出管理器，负责所有处理结果的持久化写入
  *
  * 负责：
- * - 分类后点云的 PLY 格式写出
- * - DEM 栅格的 GeoTIFF 格式写出（通过 Python 脚本桥接 rasterio）
- * - PNG 可视化图像的生成
- * - 统计信息的文本记录
+ * - 官方 DEM 与正式掩膜产物写出
+ * - 调试点云的可选 PLY 写出
+ * - GeoTIFF/PNG 可视化生成（通过 Python 脚本桥接 rasterio）
+ * - 统计信息与 JSON 报告写出
  */
 class OutputManager {
  public:

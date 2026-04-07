@@ -7,6 +7,9 @@ build/
 
 # Output directories
 output/
+config/output*/
+config/output/
+config/output_tile_smoke/
 data/*.ply
 
 # IDE and editor files
